@@ -119,8 +119,8 @@ float rawU2 = 0.0;
 
 float U1 = 0.0; // scaled values!
 float U2 = 0.0;
-char outstr4[4];
-char outstr3[3];
+//char outstr4[4];
+//char outstr3[3];
 
 // Auskoppeldämpfung der Koppler
 float Koppler1 = ATT_KOPPLER1;  //dB
@@ -360,16 +360,8 @@ void setup() {
    MBwahl[7].range=1E4;    MBwahl[7].tLen=1; MBwahl[7].Nachkomma=3;  MBwahl[7].Divisor=1E3;   strcpy(MBwahl[7].Unit,"W\0");  strcpy(MBwahl[7].Text,"10W\0");
    MBwahl[8].range=1E5;    MBwahl[8].tLen=1; MBwahl[8].Nachkomma=2;  MBwahl[8].Divisor=1E3;   strcpy(MBwahl[8].Unit,"W\0");  strcpy(MBwahl[8].Text,"100W\0");
 
- /*  MBwahl[0].minP=0.00005;  MBwahl[0].maxP=0.0008;  MBwahl[0].tLen=1; MBwahl[0].Nachkomma=1;  MBwahl[0].Divisor=0.000001; MBwahl[0].Unit="nW";
-   MBwahl[1].minP=0.0005;   MBwahl[1].maxP=0.008;   MBwahl[1].tLen=1; MBwahl[1].Nachkomma=3;  MBwahl[1].Divisor=0.001;    MBwahl[1].Unit="uW";
-   MBwahl[2].minP=0.005;    MBwahl[2].maxP=0.08;    MBwahl[2].tLen=1; MBwahl[2].Nachkomma=2;  MBwahl[2].Divisor=0.001;    MBwahl[2].Unit="uW";
-   MBwahl[3].minP=0.05;     MBwahl[3].maxP=0.8;     MBwahl[3].tLen=1; MBwahl[3].Nachkomma=1;  MBwahl[3].Divisor=0.001;    MBwahl[3].Unit="uW";
-   MBwahl[4].minP=0.5;      MBwahl[4].maxP=8.0;     MBwahl[4].tLen=1; MBwahl[4].Nachkomma=3;  MBwahl[4].Divisor=1.0;      MBwahl[4].Unit="mW";
-   MBwahl[5].minP=5.0;      MBwahl[5].maxP=80.0;    MBwahl[5].tLen=1; MBwahl[5].Nachkomma=2;  MBwahl[5].Divisor=1.0;      MBwahl[5].Unit="mW";
-   MBwahl[6].minP=50.0;     MBwahl[6].maxP=800.0;   MBwahl[6].tLen=1; MBwahl[6].Nachkomma=1;  MBwahl[6].Divisor=1.0;      MBwahl[6].Unit="mW";
-   MBwahl[7].minP=500.0;    MBwahl[7].maxP=8000.0;  MBwahl[7].tLen=1; MBwahl[7].Nachkomma=3;  MBwahl[7].Divisor=1000.0;   MBwahl[7].Unit="W";
-   MBwahl[8].minP=5000.0;   MBwahl[8].maxP=80000.0; MBwahl[8].tLen=1; MBwahl[8].Nachkomma=2;  MBwahl[8].Divisor=1000.0;   MBwahl[8].Unit="W";
-*/
+
+
   // Hier das eigentliche "Multitasking"
   // alle 1000ms Ausgabe der Rohsignal an den PC
   // alle 10ms die A/D-Wandler einlesen
@@ -436,12 +428,12 @@ float linearize(float rawU, struct LinStruct *linM, byte linMsize ) {
   return U;
 }
 
-void LCDout (String outstring,byte x, byte y, byte len) {
+void LCDout (char *outstring,byte x, byte y, byte len) {
 
   byte i;
   char empty[21];
 
-  if (len>21) return;
+  if (len>20) return;
   
   // Leerstring zusammenbauen
   for(i=0;i<len;i++) {
@@ -451,60 +443,85 @@ void LCDout (String outstring,byte x, byte y, byte len) {
   lcd.setCursor(x, y);
   lcd.print(empty);
   lcd.setCursor(x, y);
-  lcd.print(outstring);
+  strncpy(empty,outstring,len);
+  lcd.print(empty);
+  //lcd.print(outstring);
 }
 
 void screen0(float U1,float U2,float P1mW,float P2mW,float VSWR) {
 
   int lbg_draw_val_limited;
-  String outstr;
+  char outstr[30];
+  char outstr1[30];
   float P1mW_out = 0;
   float P2mW_out = 0;
+  int i;
 
 
   P1mW_out = P1mW / MBwahl[MB[0]].Divisor;
   P2mW_out = P2mW / MBwahl[MB[1]].Divisor;
-  outstr=String(U1,1);
-  outstr.concat("dBm");
+  outstr[0]='\0';
+  dtostrf(U1,4,1,outstr);
+  strcat(outstr,"dBm");
   LCDout(outstr,0,0,8);
 
-  outstr=String(U2,1);
-  outstr.concat("dBm");
+  outstr[0]='\0';
+  dtostrf(U2,4,1,outstr);
+  strcat(outstr,"dBm");
   LCDout(outstr,12,0,8);
-  dtostrf(U2, 4, 1, outstr4);
+
  
   if (abs(VSWR) > 99.9) VSWR = 99.9;
 
-  outstr=String(VSWR,2);
+  //outstr=String(VSWR,2);
+  outstr[0]='\0';
+  dtostrf(VSWR,4,2,outstr);
   LCDout(outstr,8,2,4);
-  LCDout("SWR",9,1,3);
+  outstr[0]='\0';
+  strcpy(outstr,"SWR\0");
+  LCDout(outstr,9,1,3);
 
   // Nachkommastellen und Einheit werden aus dem Sturct Array gelesen.
   //[0] Eingang1
   //[1] Eingang2
-  outstr=String(P1mW_out,MBwahl[MB[0]].Nachkomma);
-  outstr.concat(MBwahl[MB[0]].Unit);
+  outstr[0]='\0';
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  dtostrf(P1mW_out,5,MBwahl[MB[0]].Nachkomma,outstr); 
+  strcat(outstr,MBwahl[MB[0]].Unit);
   LCDout(outstr,1,1,8);
 
-  outstr=String(P2mW_out,MBwahl[MB[1]].Nachkomma);
-  outstr.concat(MBwahl[MB[1]].Unit);
+  outstr[0]='\0';
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  dtostrf(P2mW_out,5,MBwahl[MB[1]].Nachkomma,outstr);
+  strcat(outstr,MBwahl[MB[1]].Unit);
   LCDout(outstr,13,1,7);
 
-  outstr="AT:";
-  outstr.concat(String(Koppler1,1));
-  LCDout(outstr,0,2,7);
+  outstr[0]='\0';
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  //strcpy(outstr,"ATT:");
+  dtostrf(Koppler1,4,1,outstr1);
+  strcat(outstr,outstr1);
+  LCDout(outstr,1,2,7);
 
  
-  outstr="AT:";
-  outstr.concat(String(Koppler2,1));
-  LCDout(outstr,12,2,7);
-  
+  outstr[0]='\0';
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  //strcpy(outstr,"ATT:");
+  dtostrf(Koppler2,4,1,outstr1);
+  strcat(outstr,outstr1);
+  LCDout(outstr,13,2,7);
+ 
   //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
   //lbg_draw_val_limited = int(1000 * P1mW / (0.0008 * pow(10, MB1 - 1)));
   lbg_draw_val_limited = int(1000 * P1mW / (MBwahl[MB[0]].range));
   if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
   lbgPWR.drawValue(lbg_draw_val_limited, 1000);
-//  outstr="["+ MBwahl[MB[0]].Text+"]";
+  outstr[0]='\0';
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  strcpy(outstr,"[");
+  strcat(outstr,MBwahl[MB[0]].Text);
+  strcat(outstr,"]");
+
   LCDout(outstr,13,3,7);
 
 
@@ -521,26 +538,29 @@ void screen0(float U1,float U2,float P1mW,float P2mW,float VSWR) {
 
 void screen1(float U1,float U2,float P1mW,float P2mW,float VSWR) {
   int lbg_draw_val_limited;
-  String outstr;
   float P1mW_out = 0;
   float P2mW_out = 0;
-  
+  char outstr[30];
+  int i;
 
   resetCursor();
-  outstr="SCREEN1  ";
-  outstr.concat(String(Koppler1,1));
+  outstr[0]='\0';
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  strcpy(outstr,"Screen1");
   LCDout(outstr,0,2,7);
 }
 
 void screen2(float U1,float U2,float P1mW,float P2mW,float VSWR) {
-  int lbg_draw_val_limited;
-  String outstr;
-  float P1mW_out = 0;
+ int lbg_draw_val_limited;
+ float P1mW_out = 0;
   float P2mW_out = 0;
-  
+  char outstr[30];
+  int i;
+
   resetCursor();
-  outstr="SCREEN2  ";
-  outstr.concat(String(Koppler2,1));
+  outstr[0]='\0';
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  strcpy(outstr,"Screen2");
   LCDout(outstr,0,2,7);
 }
 
@@ -573,17 +593,12 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   P2mW_out = P2mW / MBwahl[MB[1]].Divisor;
   VSWR = abs((pow(10, ((U2 - U1) / 10.0)) + 1) / (pow(10, ((U2 - U1) / 10.0)) - 0.999999));
 // Ausgabe auf der verschiedenen Screens 
-  if (screenNo == oldScreenNo){
-    Serial.println("NO CHOICE");
+  if (screenNo != oldScreenNo){
+     lcd.clear();
+     oldScreenNo=screenNo;
+     if (screenNo==0) LcdBarGraph lbgPWR(&lcd, 13, 0, 3);
   }
-  else { // es wurde gedreht
-      //lcd.clear();
-      Serial.print("Old CHOICE:");
-      Serial.print(oldScreenNo);
-      oldScreenNo=screenNo;
-      Serial.print("  NEW  CHOICE:");
-      Serial.println(screenNo);
-      //if (screenNo==0) LcdBarGraph lbgPWR(&lcd, 13, 0, 3); //
+  else { // es wurde nicht gedreht
   }
   if (screenNo==0)
     screen0(U1,U2,P1mW,P2mW,VSWR);
