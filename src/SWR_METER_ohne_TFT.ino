@@ -350,7 +350,7 @@ void setup() {
 
   // Messbereichswahl
 
-   MBwahl[0].range=1E-3;   MBwahl[0].tLen=1; MBwahl[0].Nachkomma=1;  MBwahl[0].Divisor=1E-6;  strcpy(MBwahl[0].Unit,"nW\0"); strcpy(MBwahl[0].Text,"1uW\0");
+   MBwahl[0].range=1E-3;   MBwahl[0].tLen=1; MBwahl[0].Nachkomma=1;  MBwahl[0].Divisor=1E-6;  strcpy(MBwahl[0].Unit,"nW\0"); strcpy(MBwahl[0].Text,"1nW\0");
    MBwahl[1].range=1E-2;   MBwahl[1].tLen=1; MBwahl[1].Nachkomma=3;  MBwahl[1].Divisor=1E-3;  strcpy(MBwahl[1].Unit,"uW\0"); strcpy(MBwahl[1].Text,"10uW\0");
    MBwahl[2].range=1E-1;   MBwahl[2].tLen=1; MBwahl[2].Nachkomma=2;  MBwahl[2].Divisor=1E-3;  strcpy(MBwahl[2].Unit,"uW\0"); strcpy(MBwahl[2].Text,"100uW\0");
    MBwahl[3].range=1E0;    MBwahl[3].tLen=1; MBwahl[3].Nachkomma=1;  MBwahl[3].Divisor=1E-3;  strcpy(MBwahl[3].Unit,"uW\0"); strcpy(MBwahl[3].Text,"1mW\0");
@@ -536,18 +536,65 @@ void screen0(float U1,float U2,float P1mW,float P2mW,float VSWR) {
 
 }
 
-void screen1(float U1,float U2,float P1mW,float P2mW,float VSWR) {
+void screen1(byte no,float Ulin,float U,float rawU, float scalFactor) {
   int lbg_draw_val_limited;
-  float P1mW_out = 0;
-  float P2mW_out = 0;
+  float PmW_out = 0;
+  float PmW=0;
   char outstr[30];
   int i;
-
+  byte mb=4;
+  float Um=0;
+  PmW = pow(10, Ulin / 10.0);
+  mb= MBselect(PmW);
   resetCursor();
   outstr[0]='\0';
   for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
-  strcpy(outstr,"Screen1");
-  LCDout(outstr,0,2,7);
+  itoa(no+1,outstr,10);
+  strcat(outstr,">");
+  LCDout(outstr,0,0,2);
+
+  PmW_out = PmW / MBwahl[mb].Divisor;
+    
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  dtostrf(Ulin,4,1,outstr);
+  strcat(outstr,"dBm");
+  LCDout(outstr,2,0,8);
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  dtostrf(PmW_out,5,MBwahl[mb].Nachkomma,outstr); 
+  strcat(outstr,MBwahl[mb].Unit);
+  LCDout(outstr,11,0,8);
+
+ // Ausgangsspannung AD8317
+  Um=rawU / 1024 * UREF / scalFactor / UFACTOR;
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  dtostrf(Um,3,2,outstr);
+  strcat(outstr,"Vm");
+  LCDout(outstr,2,1,8);
+
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  dtostrf(rawU,4,2,outstr);
+  strcat(outstr,"Dig.");
+  LCDout(outstr,10,1,9);
+
+  // Sannung am AD Wandler
+  Um=rawU / 1024 * UREF / scalFactor ;
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  dtostrf(Um,3,2,outstr);
+  strcat(outstr,"Vad");
+  LCDout(outstr,2,2,8);
+
+   //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
+ 
+  lbg_draw_val_limited = int(1000 * PmW / (MBwahl[mb].range));
+  if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
+  lbgPWR.drawValue(lbg_draw_val_limited, 1000);
+ 
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  strcpy(outstr,"[");
+  strcat(outstr,MBwahl[mb].Text);
+  strcat(outstr,"]");
+
+  LCDout(outstr,13,3,7);
 }
 
 void screen2(float U1,float U2,float P1mW,float P2mW,float VSWR) {
@@ -569,6 +616,8 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   float VSWR = 1.0;
   float P1mW_out = 0;
   float P2mW_out = 0;
+  float U1lin=0;
+  float U2lin=0;
   //String outstr;
   //static float old_U1 = 0.0;
   //String P_unit1, P_unit2;
@@ -577,8 +626,11 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   resetCursor();
   // Lienarisierung aufrufen.
   // Länge der LinM Struct kann nicht in der Funktion bestimmt werden (3.Argument)
-  U1 = linearize(rawU1, linM0, sizeof(linM0) / sizeof(struct LinStruct)) + Koppler1;
-  U2 = linearize(rawU2, linM0, sizeof(linM0) / sizeof(struct LinStruct)) + Koppler2;
+  U1lin = linearize(rawU1, linM0, sizeof(linM0) / sizeof(struct LinStruct));
+  U2lin = linearize(rawU2, linM0, sizeof(linM0) / sizeof(struct LinStruct));
+
+  U1=U1lin+Koppler1;
+  U2=U2lin+Koppler2;
 
   P1mW = pow(10, U1 / 10.0);
   P2mW = pow(10, U2 / 10.0);
@@ -596,76 +648,38 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   if (screenNo != oldScreenNo){
      lcd.clear();
      oldScreenNo=screenNo;
-     if (screenNo==0) LcdBarGraph lbgPWR(&lcd, 13, 0, 3);
+     LcdBarGraph lbgPWR(&lcd, 13, 0, 3);
   }
   else { // es wurde nicht gedreht
   }
   if (screenNo==0)
     screen0(U1,U2,P1mW,P2mW,VSWR);
   else if (screenNo==1)
-    screen1(U1,U2,P1mW,P2mW,VSWR);
+    screen1(0,U1lin,U1,rawU1,scalFactor1);
   else if (screenNo==2)
-    screen2(U1,U2,P1mW,P2mW,VSWR);
+    screen1(1,U2lin,U2,rawU2,scalFactor2);
 
-/*  
-  outstr=String(U1,1);
-  outstr.concat("dBm");
-  LCDout(outstr,0,0,8);
-
-  outstr=String(U2,1);
-  outstr.concat("dBm");
-  LCDout(outstr,12,0,8);
-  dtostrf(U2, 4, 1, outstr4);
- 
-  if (abs(VSWR) > 99.9) VSWR = 99.9;
-
-  outstr=String(VSWR,2);
-  LCDout(outstr,8,2,4);
-  LCDout("SWR",9,1,3);
-
-  // Nachkommastellen und Einheit werden aus dem Sturct Array gelesen.
-  //[0] Eingang1
-  //[1] Eingang2
-  outstr=String(P1mW_out,MBwahl[MB[0]].Nachkomma);
-  outstr.concat(MBwahl[MB[0]].Unit);
-  LCDout(outstr,1,1,8);
-
-  outstr=String(P2mW_out,MBwahl[MB[1]].Nachkomma);
-  outstr.concat(MBwahl[MB[1]].Unit);
-  LCDout(outstr,13,1,7);
-
-  outstr="AT:";
-  outstr.concat(String(Koppler1,1));
-  LCDout(outstr,0,2,7);
-
- 
-  outstr="AT:";
-  outstr.concat(String(Koppler2,1));
-  LCDout(outstr,12,2,7);
-  
-  //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
-  //lbg_draw_val_limited = int(1000 * P1mW / (0.0008 * pow(10, MB1 - 1)));
-  lbg_draw_val_limited = int(1000 * P1mW / (MBwahl[MB[0]].range));
-  if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
-  lbgPWR.drawValue(lbg_draw_val_limited, 1000);
-  outstr="["+ MBwahl[MB[0]].Text+"]";
-  LCDout(outstr,13,3,7);
-
-
-  lcd.setCursor(10, 0);
-  lcd.print(" ");
-  lcd.setCursor(10, 0);
-
-  lcd.print(item_pos);
-
-  edit = true;
   resetCursor();
 
  
+}
 
-*/
-
-
+byte MBselect(float PmW) {
+  // Messbereichsumschaltung anhand MBStruct
+  // ohne gloable Variablen
+  byte i;
+  float  minP;
+  float maxP;
+  // Bereich passt nicht und Wartezeit vorbei, wir suchen den passenden Bereich
+  for(i=0;i<(sizeof(MBwahl)/sizeof(MBStruct));i++) {
+    minP=MBwahl[i].range *0.05;
+    maxP=MBwahl[i].range *0.8;
+    if ((PmW<maxP) && (PmW>minP)) {
+      // Wir haben den richtigen MB gefunden
+       return i;         
+    }
+  }
+  return 0; 
 }
 
 
@@ -675,10 +689,12 @@ byte MB_Wahl(byte kanal,float PmW) {
   unsigned long switch_MB = millis();
   byte i;
   byte MBakt;
+  float  minP;
+  float maxP;
   MBakt=MB[kanal];
   // Grenzen des Bereichs min 0.05 * range, max 08*range
-  float  minP=MBwahl[MBakt].range *0.05;
-  float maxP=MBwahl[MBakt].range *0.8;
+  minP=MBwahl[MBakt].range *0.05;
+  maxP=MBwahl[MBakt].range *0.8;
   // wir schauen uns den gewählen Bereich mal an, ob er passt
   //if ((PmW<MBwahl[MBakt].maxP) && (PmW>MBwahl[MBakt].minP)) {
     if ((PmW<maxP) && (PmW>minP)) {
@@ -704,7 +720,7 @@ byte MB_Wahl(byte kanal,float PmW) {
        return MB[kanal];         
     }
   }
-   
+  return 0; 
 }
 
 
