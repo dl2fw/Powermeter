@@ -30,6 +30,19 @@
 #define LCD_D6 31
 #define LCD_D7 32
 
+// ENCODER und Interrupt Kram
+#define PINA_INPUT INPUT
+#define PINB_INPUT INPUT
+#define PUSHB_INPUT INPUT
+
+//#define PINA_INPUT INPUT_PULLUP
+//#define PINB_INPUT INPUT_PULLUP
+//#define PUSHB_INPUT INPUT_PULLUP
+
+
+#define PINA_INT  FALLING
+#define PUSHB_INT FALLING
+
 
 // Auskoppeldämfpung in dB
 #define ATT_KOPPLER1 50
@@ -325,16 +338,16 @@ void setup() {
   //pinMode(PINA,INPUT_PULLUP);
   //pinMode(PINB,INPUT_PULLUP);
   //pinMode(PUSHB,INPUT_PULLUP);
-  pinMode(PINA, INPUT);
-  pinMode(PINB, INPUT);
-  pinMode(PUSHB, INPUT);
+  pinMode(PINA, PINA_INPUT);
+  pinMode(PINB, PINB_INPUT);
+  pinMode(PUSHB, PUSHB_INPUT);
 
   // initailisiere die ISR Routinen
   //isr() für Encoder Handling
   //isrB() für Push Button
   // beim Encoder evtl. CHANGE eintragen
-  attachInterrupt (digitalPinToInterrupt(PINA), isr, FALLING);   // Encoder
-  attachInterrupt (digitalPinToInterrupt(PUSHB), isrB, FALLING); // Push Button
+  attachInterrupt (digitalPinToInterrupt(PINA), isr, PINA_INT);   // Encoder
+  attachInterrupt (digitalPinToInterrupt(PUSHB), isrB, PUSHB_INT); // Push Button
 
   // setzen der Analogreferenz.
   analogReference(REFERENCE);
@@ -415,19 +428,19 @@ void calibration(byte kanal,float *scalFactor,byte pin){
   float oldScal=-999;
   float rawU=linM0[HIGH_LIMIT].ADnorm;
   int mp;
-  const float smooth = 0.0001;
+  float smooth = 0.1;
+  boolean ready=false;
   
   lcd.clear();
   for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
-  strcpy(outstr,"Kalibrierung Kanal ");
-  LCDout("Kalibrierung Kanal ",0,0,18);
+  LCDout("Kalibrierung Kanal ",0,0,19);
   itoa(kanal,outstr,10);
   LCDout(outstr,19,0,1);
   for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
-  LCDout("Pegel:",0,1,6);
+  LCDout("P:",0,1,6);
   dtostrf(dbM,5,1,outstr);
-  LCDout(outstr,7,1,5);
-  LCDout("dBm",12,1,3);
+  LCDout(outstr,2,1,5);
+  LCDout("dBm",7,1,3);
   for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
   LCDout("Ref:",0,2,4);
   dtostrf(ref,6,1,outstr);
@@ -440,12 +453,12 @@ void calibration(byte kanal,float *scalFactor,byte pin){
   LCDout("Scal:",0,3,5);
   dtostrf(*scalFactor,5,3,outstr);
   LCDout(outstr,5,3,5);
-  LCDout("0/9",16,1,3);
+  //LCDout("0/9",16,1,3);
   // Anfangswert setzen
   rawU=(float)analogRead(pin)* *scalFactor;
   // wir koennen nicht auf die MW  per Task warten, wir müssen die Messungen selbst aufrufen
  //while( int(*scalFactor*10000) != int(oldScal *10000)) {// drei Stellen hinter dem Komma stabil
- while(count<9) {
+ while(count<3) {
     oldScal= *scalFactor;
     mp=(float)analogRead(pin);
     rawU = (1.0 - smooth) * rawU + (smooth * mp);
@@ -455,18 +468,38 @@ void calibration(byte kanal,float *scalFactor,byte pin){
     LCDout(outstr,14,2,6);
     for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
     LCDout("AK:",11,3,3);
-    dtostrf(mp,6,1,outstr);
-    LCDout(outstr,14,3,6);
+    itoa(mp,outstr,10);
+    LCDout(outstr,15,3,6);
     for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
     dtostrf(*scalFactor,5,3,outstr);
     LCDout(outstr,5,3,5);
-    if (int(*scalFactor*10000) == int(oldScal *10000)) 
+    
+    // Wir erhöhen die Glaettung nach Genauigkeit
+    if (!ready && (int(*scalFactor*10) == int(oldScal *10)))
+      smooth=0.01;
+     else if (!ready && (int(*scalFactor*100) == int(oldScal *100)))
+      smooth=0.01;
+    else if (!ready && (int(*scalFactor*1000) == int(oldScal *1000))) {
+      smooth=0.001;
+      ready=true;
+    }
+    else if (ready && (int(*scalFactor*1000) == int(oldScal *1000))) {
       count++;
+      LCDout("*",0,0,1);
+    }
     else
       count=0;
     itoa(count,outstr,10);
-    LCDout(outstr,16,1,1);
-    delay(20);
+    LCDout(outstr,12,1,1);
+
+    for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+    dtostrf(smooth,5,4,outstr);
+    LCDout(outstr,14,1,5);
+    delay(40);
+    if (fired) {
+       fired=false;
+       break;
+    }
   }
   LCDout("Kalibrierung fertig",0,0,20);
   delay(5000);
