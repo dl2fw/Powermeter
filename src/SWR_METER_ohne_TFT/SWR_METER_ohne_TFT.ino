@@ -6,8 +6,10 @@
 #include <LcdBarGraph.h>
 #include <stdio.h>
 
+
+
 // Debug Modus, zusätzliche Ausgaben in der seriellen Konsole
-#define DEBUG
+//#define DEBUG
 
 // Definitionen
 // Encoder, PINA muss interuptfähig sein
@@ -45,17 +47,11 @@
 
 
 // Auskoppeldämfpung in dB
-#define ATT_KOPPLER1 0
-#define ATT_KOPPLER2 0
+#define ATT_KOPPLER1 50
+#define ATT_KOPPLER2 30
 // welche Ref. für den AD Wandler soll genutzt werden?
-//#define REFERENCE INTERNAL2V56
-#define REFERENCE INTERNAL1V1
-//#define UREF 2.56
-//Wert bei -70dBm (max. Ausgangsspannung) entspricht 1023
-//#define U70dBm_1 1.745
-//#define U70dBm_2 1.715
-// Spannungsteiler Ausgang AD8317
-//#define UFACTOR 1
+#define REFERENCE INTERNAL2V56
+
 
 // Limits, Index des Struct Arrays
 #define LOW_LIMIT 16 // entspricht -70dBm
@@ -95,11 +91,11 @@
 
 
 // Skalierungsfaktor zur Umrechnung der Messwerte, wir später beim kalibrieren ermittelt
-float scalFactor1 = 1.0;
-//float scalFactor1 = 1.397;
+//float scalFactor1 = 1.0;
+float scalFactor1 = 1.397;
 //0.7877 ;
-//float scalFactor2 = 1.39 ;
-float scalFactor2 = 1.0;
+float scalFactor2 = 1.39 ;
+
 int frequenz= QRG; // Frequenz in MHz
 
 
@@ -433,7 +429,7 @@ void calibration(byte kanal,float *scalFactor,byte pin){
   
   lcd.clear();
   for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
-  LCDout("Kalibrierung Kanal ",0,0,19);
+  LCDout("Kalibrierung Kanal",0,0,18);
   itoa(kanal,outstr,10);
   LCDout(outstr,19,0,1);
   for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
@@ -485,7 +481,7 @@ void calibration(byte kanal,float *scalFactor,byte pin){
     }
     else if (ready && (int(*scalFactor*1000) == int(oldScal *1000))) {
       count++;
-      LCDout("*",0,0,1);
+      //LCDout("*",0,0,1);
     }
     else
       count=0;
@@ -502,7 +498,7 @@ void calibration(byte kanal,float *scalFactor,byte pin){
     }
   }
   LCDout("Kalibrierung fertig",0,0,20);
-  delay(5000);
+  delay(3000);
   //lcd.clear();
   
   
@@ -510,7 +506,7 @@ void calibration(byte kanal,float *scalFactor,byte pin){
 
 void take_ads()
 {
- /* float mp;
+  float mp;
   // erster Kanal
   mp=freq_correction((float)analogRead(PIN_A1)*scalFactor1,frequenz,linM0);
   // falls der MW kleiner als unsere kleinste Spannung ist, glätten wir nicht von 0 an
@@ -523,36 +519,31 @@ void take_ads()
   if (rawU2 < linM0[HIGH_LIMIT].ADnorm) // noch kein Wert da, dann nehmen wir mal den echten Messwert
     rawU2=mp;
   rawU2 = (1.0 - smooth) * rawU2 + smooth * mp;
-  */
-  //rawU2 = (1.0 - smooth) * rawU2 + smooth * freq_correction((float)analogRead(PIN_A2)*scalFactor2,frequenz,linM0);
-  rawU1 = (1.0 - smooth) * rawU1 + smooth * (float)analogRead(PIN_A1) * scalFactor1;
- rawU2 = (1.0 - smooth) * rawU2 + smooth * (float)analogRead(PIN_A2) * scalFactor2;
+ // rawU2 = (1.0 - smooth) * rawU2 + smooth * (float)analogRead(PIN_A2) * scalFactor2;
 }
-//freq_correction(rawU1,frequenz, linM0)
+
+
 float freq_correction(float rawU,float qrg, struct LinStruct *linM ) {
   float corrU;
   float offset;
-  Serial.print("QRG=");
-  Serial.println(qrg);
-  Serial.print("rawU=");
-  Serial.println(rawU);
   offset=(qrg * QRG_FACTOR); //Offset(f)= 0,020469 * Messfrequenz in MHz 
-Serial.print("OFFset=");
-  Serial.println(offset);
   corrU=rawU + offset;     // MW = MW + Offset(f); 
-Serial.print("Korrigiert=");
-Serial.println(corrU);
+
   
   if (corrU > linM[QRG_HIGH_CORR].ADnorm){
     corrU = corrU -((corrU - linM[QRG_HIGH_CORR].ADnorm)/QRG_HIGH_FACTOR) * offset; //  MW = MW - ((MW - 736,8) / 244,8) * Offset(f);
-    Serial.println("Korr HIGH");
+
   }
   else if ((corrU > linM[HIGH_LIMIT].ADnorm) && (corrU < linM[QRG_LOW_CORR].ADnorm)) {// nur ausführen, wenn wir einen Wert >0dBm haben, aus Limits ermittelt
     corrU = corrU -((linM[QRG_LOW_CORR].ADnorm-corrU)/QRG_LOW_FACTOR) * offset;  //  W = MW - ((281,5 - MW) / 86,4 ) * Offset(f);
-    Serial.println("Korr LOW");
+
   }
-  Serial.print("Korrigiert2=");
-  Serial.println(corrU);
+  // Begrenzung der Werte
+  //
+  //if (MW > 981,6) MW = 981,6; 
+  //if (MW < 231,1) MW = 231,1; 
+   if (corrU > linM[LOW_LIMIT].ADnorm)         corrU =  linM[LOW_LIMIT].ADnorm;    //#define LOW_LIMIT 16  entspricht -70dBm
+   else if (corrU <linM[HIGH_LIMIT].ADnorm)    corrU =  linM[HIGH_LIMIT].ADnorm;
   return corrU;
 }
 
@@ -586,8 +577,8 @@ float linearize(float rawU, struct LinStruct *linM, byte linMsize ) {
   Serial.print("  dB=");
   Serial.println(linM[pU].dB);
 #endif
-  if (pU > (LOW_LIMIT-1))    U = linM[LOW_LIMIT].dB;
-  else if (pU < 1)          U = linM[HIGH_LIMIT].dB;
+  if (pU > (linMsize-1))    U = linM[linMsize].dB;
+  else if (pU < 1)          U = linM[0].dB;
   else                      U = ((rawU - linM[pU].ADnorm) / (linM[pU + 1].ADnorm - linM[pU].ADnorm)) * (linM[pU + 1].dB - linM[pU].dB) + linM0[pU].dB;
 #ifdef DEBUG
   Serial.print("U lin=");
