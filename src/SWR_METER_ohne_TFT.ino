@@ -37,12 +37,30 @@
 // welche Ref. für den AD Wandler soll genutzt werden?
 #define REFERENCE INTERNAL2V56
 // #define REFERENCE INTERNAL1V1
-#define UREF 2.56
+//#define UREF 2.56
 //Wert bei -70dBm (max. Ausgangsspannung) entspricht 1023
-#define U70dBm_1 1.745
-#define U70dBm_2 1.715
+//#define U70dBm_1 1.745
+//#define U70dBm_2 1.715
 // Spannungsteiler Ausgang AD8317
-#define UFACTOR 1
+//#define UFACTOR 1
+
+// Limits, Index des Struct Arrays
+#define LOW_LIMIT 16 // entspricht -70dBm
+#define HIGH_LIMIT 2 // entspricht 0dBm
+
+// Werte fuer Frequenzkorrektur
+// beziehen sich auf Index des Struct Array
+#define QRG_HIGH_CORR 10 // -40dBm
+#define QRG_LOW_CORR 3 // -5dBm
+
+#define QRG_FACTOR 0.020469
+#define QRG_HIGH_FACTOR 244.8
+#define QRG_LOW_FACTOR 86.4
+
+// Kalibrierung
+#define CALIBRATE 4 // 4. Eintarg in limM0 --> -10dB
+
+#define QRG 5 // Test Frequenz MHz
 
 // Anzeigeformate
 // 2 --> 3 Darsatellungen 0,1,2
@@ -58,14 +76,18 @@
 #define START4 "  ---------------"
 
 
-//Linearisierungstabelle für den Messverstärker [db vs. rawU 0...1023]
+//Linearisierungstabelle für den Messverstärker [db vs. rawU]
 //Arrays für die Interpolationn der Messwerte wird in der setup() Routine definiert
 //int linM0[17][17];
 
 
-// Skalierungsfaktor zur Umrechnung der Messwerte auf -70dBm => 1024
-const float scalFactor1 = UREF / U70dBm_1 ;
-const float scalFactor2 = UREF / U70dBm_2 ;
+// Skalierungsfaktor zur Umrechnung der Messwerte, wir später beim kalibrieren ermittelt
+//float scalFactor1 = 1.0;
+float scalFactor1 = 1.397;
+//0.7877 ;
+float scalFactor2 = 1.39 ;
+
+int frequenz= QRG; // Frequenz in MHz
 
 
 const float smooth = 0.004;
@@ -73,7 +95,7 @@ const float smooth = 0.004;
 
 struct LinStruct {
   int dB;
-  unsigned int ADnorm;
+  float ADnorm;
 };
 
 struct LinStruct linM0[17];
@@ -112,7 +134,7 @@ float P1mW = 0.0;
 float P2mW = 0.0;
 Timer t;
 
-// eingelesene Werte, werden geglättet 0..1023
+// eingelesene Werte
 float rawU1 = 0.0; // takes averaged but unscaled value
 float rawU2 = 0.0;
 
@@ -172,6 +194,18 @@ void isr ()
 }  // end of isr
 
 void check_encoder() {
+  if(fired) { // es wurde die Taste gedrueckt
+      fired=false;
+      if (screenNo==1) { // Kruecke, um den Eingang auszuwaehlen, wandert später in die State Machine
+        calibration(screenNo,&scalFactor1,PIN_A1);
+        screenNo=0;
+      }
+      else if(screenNo==2) {
+          calibration(screenNo,&scalFactor2,PIN_A2);
+          screenNo=0;
+      }
+  }
+  fired=false;
   if (turned)
   {
 //    if (!edit && !change_value) { // wir sind nicht im Editiermodus
@@ -282,16 +316,7 @@ void setup() {
   // -- initializing the LCD
   Serial.println("Start PowerMeter");
 #ifdef DEBUG
-  Serial.print("VRef:");
-  Serial.println(UREF);
-  Serial.print("U1 -70dBm (Vor Spannungsteiler):");
-  Serial.print(U70dBm_1);
-  Serial.print("U2 -70dBm (Vor Spannungsteiler):");
-  Serial.print(U70dBm_2);
-  Serial.print("V \nFaktor Spannungsteiler:");
-  Serial.println(UFACTOR);
-  Serial.println("Alle Spannungs-Messwerte beziehen sich auf Ausgang AD8317");
-  Serial.println("Alle Raw-Messwerte beziehen sich auf U -70dBm==1023");
+  
 #endif
   Serial.println("---------------------------------------------------------");
   lcd.begin(20, 4);
@@ -325,66 +350,23 @@ void setup() {
   delay(2000);
   lcd.clear();
 
-  linM0[0].dB = 10; linM0[0].ADnorm = 201;
-  linM0[1].dB = 5; linM0[1].ADnorm = 214;
-  linM0[2].dB = 0; linM0[2].ADnorm = 242;
-  linM0[3].dB = -5; linM0[3].ADnorm = 249;
-  linM0[4].dB = -10; linM0[4].ADnorm = 360;
-  linM0[5].dB = -15; linM0[5].ADnorm = 431;
-  linM0[6].dB = -20; linM0[6].ADnorm = 497;
-  linM0[7].dB = -25; linM0[7].ADnorm = 565;
-  linM0[8].dB = -30; linM0[8].ADnorm = 632;
-  linM0[9].dB = -35; linM0[9].ADnorm = 701;
-  linM0[10].dB = -40; linM0[10].ADnorm = 769;
-  linM0[11].dB = -45; linM0[11].ADnorm = 834;
-  linM0[12].dB = -50; linM0[12].ADnorm = 890;
-  linM0[13].dB = -55; linM0[13].ADnorm = 933;
-  linM0[14].dB = -60; linM0[14].ADnorm = 962;
-  linM0[15].dB = -65; linM0[15].ADnorm = 1000;
-  linM0[16].dB = -70; linM0[16].ADnorm = 1023;
-
-
-  // Messwerte DL2FW, alte Struktur
-  //Linearisierungstabelle für den Messverstärker [db vs. Millivolt]
-/*
-linM0[0][0]=10.0; linM0[0][1]=188.2;
-linM0[1][0]=5.0; linM0[1][1]=191,1;
-linM0[2][0]=0.0; linM0[2][1]=197.7;
-linM0[3][0]=-5.0; linM0[3][1]=217.4;
-linM0[4][0]=-10.0; linM0[4][1]=255.0;
-linM0[5][0]=-15.0; linM0[5][1]=312.3;
-linM0[6][0]=-20.0; linM0[6][1]=374.9;
-linM0[7][0]=-25.0; linM0[7][1]=435.7;
-linM0[8][0]=-30.0; linM0[8][1]=497.4;
-linM0[9][0]=-35.0; linM0[9][1]=560.0;
-linM0[10][0]=-40.0; linM0[10][1]=622.2;
-linM0[11][0]=-45.0; linM0[11][1]=688.0;
-linM0[12][0]=-50.0; linM0[12][1]=750.1;
-linM0[13][0]=-55.0; linM0[13][1]=815.6;
-linM0[14][0]=-60.0; linM0[14][1]=877.0;
-linM0[15][0]=-65.0; linM0[15][1]=917.6;
-linM0[16][0]=-70.0; linM0[16][1]=936.5;
-
-   Wird bei größerem Prozessor aktiviert!!!
-linM1[0][0]=10.0;   linM1[0][1]=188.2;
-linM1[1][0]=5.0;    linM1[1][1]=191,1;
-linM1[2][0]=0.0;    linM1[2][1]=200.1;
-linM1[3][0]=-5.0;   linM1[3][1]=221.2;
-linM1[4][0]=-10.0;  linM1[4][1]=259.0;
-linM1[5][0]=-15.0;  linM1[5][1]=312.3;
-linM1[6][0]=-20.0;  linM1[6][1]=374.9;
-linM1[7][0]=-25.0;  linM1[7][1]=435.7;
-linM1[8][0]=-30.0;  linM1[8][1]=497.4;
-linM1[9][0]=-35.0;  linM1[9][1]=560.0;
-linM1[10][0]=-40.0; linM1[10][1]=622.2;
-linM1[11][0]=-45.0; linM1[11][1]=688.0;
-linM1[12][0]=-50.0; linM1[12][1]=750.1;
-linM1[13][0]=-55.0; linM1[13][1]=815.6;
-linM1[14][0]=-60.0; linM1[14][1]=877.0;
-linM1[15][0]=-65.0; linM1[15][1]=917.6;
-linM1[16][0]=-70.0; linM1[16][1]=936.5;
-
-*/
+  linM0[0].dB = 10; linM0[0].ADnorm = 195.2;
+  linM0[1].dB = 5; linM0[1].ADnorm = 208.6;
+  linM0[2].dB = 0; linM0[2].ADnorm = 231.1;
+  linM0[3].dB = -5; linM0[3].ADnorm = 281.5;
+  linM0[4].dB = -10; linM0[4].ADnorm = 340.7;
+  linM0[5].dB = -15; linM0[5].ADnorm = 406.8;
+  linM0[6].dB = -20; linM0[6].ADnorm = 473.2;
+  linM0[7].dB = -25; linM0[7].ADnorm = 538.7;
+  linM0[8].dB = -30; linM0[8].ADnorm = 604.2;
+  linM0[9].dB = -35; linM0[9].ADnorm = 670.0;
+  linM0[10].dB = -40; linM0[10].ADnorm = 736.8;
+  linM0[11].dB = -45; linM0[11].ADnorm = 800.4;
+  linM0[12].dB = -50; linM0[12].ADnorm = 863.8;
+  linM0[13].dB = -55; linM0[13].ADnorm = 914.2;
+  linM0[14].dB = -60; linM0[14].ADnorm = 958.1;
+  linM0[15].dB = -65; linM0[15].ADnorm = 972.1;
+  linM0[16].dB = -70; linM0[16].ADnorm = 981.6;
 
   // Startpunkt fuer Messbereichswahl
   MB[0]=4;
@@ -424,12 +406,120 @@ void loop()
 
 }
 
-void take_ads()
-{
-  rawU1 = (1.0 - smooth) * rawU1 + smooth * (float)analogRead(PIN_A1) * scalFactor1;
-  rawU2 = (1.0 - smooth) * rawU2 + smooth * (float)analogRead(PIN_A2) * scalFactor2;
+void calibration(byte kanal,float *scalFactor,byte pin){
+  // Kalibrierung des Kanals bei limM0[CALIBRATE]
+  float dbM=linM0[CALIBRATE].dB;
+  float ref=linM0[CALIBRATE].ADnorm;
+  char outstr[30];
+  byte i,count=0;
+  float oldScal=-999;
+  float rawU=linM0[HIGH_LIMIT].ADnorm;
+  int mp;
+  const float smooth = 0.0001;
+  
+  lcd.clear();
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  strcpy(outstr,"Kalibrierung Kanal ");
+  LCDout("Kalibrierung Kanal ",0,0,18);
+  itoa(kanal,outstr,10);
+  LCDout(outstr,19,0,1);
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  LCDout("Pegel:",0,1,6);
+  dtostrf(dbM,5,1,outstr);
+  LCDout(outstr,7,1,5);
+  LCDout("dBm",12,1,3);
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  LCDout("Ref:",0,2,4);
+  dtostrf(ref,6,1,outstr);
+  LCDout(outstr,4,2,6);
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  LCDout("MW:",11,2,3);
+  dtostrf(rawU1,6,1,outstr);
+  LCDout(outstr,14,2,6);
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+  LCDout("Scal:",0,3,5);
+  dtostrf(*scalFactor,5,3,outstr);
+  LCDout(outstr,5,3,5);
+  LCDout("0/9",16,1,3);
+  // Anfangswert setzen
+  rawU=(float)analogRead(pin)* *scalFactor;
+  // wir koennen nicht auf die MW  per Task warten, wir müssen die Messungen selbst aufrufen
+ //while( int(*scalFactor*10000) != int(oldScal *10000)) {// drei Stellen hinter dem Komma stabil
+ while(count<9) {
+    oldScal= *scalFactor;
+    mp=(float)analogRead(pin);
+    rawU = (1.0 - smooth) * rawU + (smooth * mp);
+    *scalFactor=ref/rawU;
+    for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+    dtostrf(rawU,6,1,outstr);
+    LCDout(outstr,14,2,6);
+    for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+    LCDout("AK:",11,3,3);
+    dtostrf(mp,6,1,outstr);
+    LCDout(outstr,14,3,6);
+    for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+    dtostrf(*scalFactor,5,3,outstr);
+    LCDout(outstr,5,3,5);
+    if (int(*scalFactor*10000) == int(oldScal *10000)) 
+      count++;
+    else
+      count=0;
+    itoa(count,outstr,10);
+    LCDout(outstr,16,1,1);
+    delay(20);
+  }
+  LCDout("Kalibrierung fertig",0,0,20);
+  delay(5000);
+  //lcd.clear();
+  
+  
 }
 
+void take_ads()
+{
+  float mp;
+  // erster Kanal
+  mp=freq_correction((float)analogRead(PIN_A1)*scalFactor1,frequenz,linM0);
+  // falls der MW kleiner als unsere kleinste Spannung ist, glätten wir nicht von 0 an
+  if (rawU1 < linM0[HIGH_LIMIT].ADnorm) // noch kein Wert da, dann nehmen wir mal den echten Messwert
+    rawU1=mp;
+  //Glättung
+  rawU1 = (1.0 - smooth) * rawU1 + smooth * mp;
+  // zweiter Kanal
+  mp=freq_correction((float)analogRead(PIN_A2)*scalFactor2,frequenz,linM0);
+  if (rawU2 < linM0[HIGH_LIMIT].ADnorm) // noch kein Wert da, dann nehmen wir mal den echten Messwert
+    rawU2=mp;
+  rawU2 = (1.0 - smooth) * rawU2 + smooth * mp;
+  //rawU2 = (1.0 - smooth) * rawU2 + smooth * freq_correction((float)analogRead(PIN_A2)*scalFactor2,frequenz,linM0);
+ // rawU2 = (1.0 - smooth) * rawU2 + smooth * (float)analogRead(PIN_A2) * scalFactor2;
+}
+//freq_correction(rawU1,frequenz, linM0)
+float freq_correction(float rawU,float qrg, struct LinStruct *linM ) {
+  float corrU;
+  float offset;
+  Serial.print("QRG=");
+  Serial.println(qrg);
+  Serial.print("rawU=");
+  Serial.println(rawU);
+  offset=(qrg * QRG_FACTOR); //Offset(f)= 0,020469 * Messfrequenz in MHz 
+Serial.print("OFFset=");
+  Serial.println(offset);
+  corrU=rawU + offset;     // MW = MW + Offset(f); 
+Serial.print("Korrigiert=");
+Serial.println(corrU);
+  
+  if (corrU > linM[QRG_HIGH_CORR].ADnorm){
+    corrU = corrU -((corrU - linM[QRG_HIGH_CORR].ADnorm)/QRG_HIGH_FACTOR) * offset; //  MW = MW - ((MW - 736,8) / 244,8) * Offset(f);
+    Serial.println("Korr HIGH");
+  }
+  else if ((corrU > linM[HIGH_LIMIT].ADnorm) && (corrU < linM[QRG_LOW_CORR].ADnorm)) {// nur ausführen, wenn wir einen Wert >0dBm haben, aus Limits ermittelt
+    corrU = corrU -((linM[QRG_LOW_CORR].ADnorm-corrU)/QRG_LOW_FACTOR) * offset;  //  W = MW - ((281,5 - MW) / 86,4 ) * Offset(f);
+    Serial.println("Korr LOW");
+  }
+  Serial.print("Korrigiert2=");
+  Serial.println(corrU);
+  return corrU;
+}
 
 float linearize(float rawU, struct LinStruct *linM, byte linMsize ) {
   // Interpoliert anhand der liM Struct
@@ -461,8 +551,8 @@ float linearize(float rawU, struct LinStruct *linM, byte linMsize ) {
   Serial.print("  dB=");
   Serial.println(linM[pU].dB);
 #endif
-  if (pU > (linMsize - 2))    U = linM[linMsize - 1].dB;
-  else if (pU < 1)          U = linM[0].dB;
+  if (pU > LOW_LIMIT)    U = linM[LOW_LIMIT].dB;
+  else if (pU < HIGH_LIMIT)          U = linM[HIGH_LIMIT].dB;
   else                      U = ((rawU - linM[pU].ADnorm) / (linM[pU + 1].ADnorm - linM[pU].ADnorm)) * (linM[pU + 1].dB - linM[pU].dB) + linM0[pU].dB;
 #ifdef DEBUG
   Serial.print("U lin=");
@@ -470,7 +560,6 @@ float linearize(float rawU, struct LinStruct *linM, byte linMsize ) {
 #endif
   return U;
 }
-
 void LCDout (char *outstring,byte x, byte y, byte len) {
 
   byte i;
@@ -607,25 +696,30 @@ void screen1(byte no,float Ulin,float U,float rawU, float scalFactor) {
   strcat(outstr,MBwahl[mb].Unit);
   LCDout(outstr,11,0,8);
 
- // Ausgangsspannung AD8317
-  Um=rawU / 1024 * UREF / scalFactor / UFACTOR;
+
+  Um=rawU /  scalFactor;
   for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
-  dtostrf(Um,3,2,outstr);
-  strcat(outstr,"Vm");
-  LCDout(outstr,2,1,8);
+  LCDout("Dm:",0,1,10);
+  dtostrf(Um,5,1,outstr);
+  //strcat(outstr,"Dr:");
+  LCDout(outstr,4,1,10);
 
   for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
-  dtostrf(rawU,4,2,outstr);
-  strcat(outstr,"Dig.");
-  LCDout(outstr,10,1,9);
+  LCDout("Dk:",11,1,10);
+  dtostrf(rawU,5,1,outstr);
+  //strcat(outstr,"Dk:");
+  LCDout(outstr,15,1,10);
 
   // Sannung am AD Wandler
-  Um=rawU / 1024 * UREF / scalFactor ;
-  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
-  dtostrf(Um,3,2,outstr);
-  strcat(outstr,"Vad");
-  LCDout(outstr,2,2,8);
-
+  //Um=rawU / 1024 * UREF / scalFactor ;
+  //Um=rawU / scalFactor ;
+  
+    for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+    strcpy(outstr,"Faktor:");
+    LCDout(outstr,0,2,7);
+    for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+    dtostrf(scalFactor,5,3,outstr);
+    LCDout(outstr,9,2,5);
    //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
  
   lbg_draw_val_limited = int(1000 * PmW / (MBwahl[mb].range));
@@ -667,7 +761,10 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   //int lbg_draw_val_limited;
   
   resetCursor();
-  // Lienarisierung aufrufen.
+  // Frequenzkorrektur
+  //rawU1=freq_correction(rawU1,frequenz, linM0);
+  //rawU2=freq_correction(rawU2,frequenz, linM0);
+    // Lienarisierung aufrufen.
   // Länge der LinM Struct kann nicht in der Funktion bestimmt werden (3.Argument)
   U1lin = linearize(rawU1, linM0, sizeof(linM0) / sizeof(struct LinStruct));
   U2lin = linearize(rawU2, linM0, sizeof(linM0) / sizeof(struct LinStruct));
@@ -779,10 +876,10 @@ void write_raw_seriell() {
   Serial.print("U1:");
   Serial.print((int)rawU1);
   Serial.print("(");
-  Serial.print(rawU1 / 1024 * UREF / scalFactor1 / UFACTOR);
+  //Serial.print(rawU1 / 1024 * UREF / scalFactor1 / UFACTOR);
   Serial.print("V)  U2:");
   Serial.print((int)rawU2);
   Serial.print("(");
-  Serial.print(rawU2 / 1024 * UREF / scalFactor2 / UFACTOR);
+  //Serial.print(rawU2 / 1024 * UREF / scalFactor2 / UFACTOR);
   Serial.println("V)");
 }
