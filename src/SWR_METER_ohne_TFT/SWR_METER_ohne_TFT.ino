@@ -149,16 +149,7 @@ struct LinStruct {
 struct LinStruct linM0[17];
 
 // Messbereichswahl
-/*
-  struct MBStruct {
-    float minP;         // Bereich Anfang
-    float maxP;         // Bereich Ende
-    int tLen;           // min. Zeitraum
-    byte Nachkomma;     // anzuzeigende Nachkommastellen
-    float Divisor;     // Devisor für die Darstellung
-    String Unit;        // Einheit
-  };
-*/
+
 struct MBStruct {
   float range;         // Bereich Anfang= *0.05 Ende *0.8
   int tLen;            // min. Zeitraum
@@ -461,6 +452,7 @@ void setup() {
     lcd.print("EEPROM leer, init..");
     EEprom.calibrated[0]=false;
     EEprom.calibrated[1]=false; 
+    writeEEPROM();
    
     if (!readEEPROM()) {
       lcd.setCursor(0, 3);
@@ -478,12 +470,14 @@ void setup() {
    
    if (!EEprom.calibrated[0]) {
       lcd.setCursor(0, 0);
+      Serial.println("Kanal 1 unkalbibiert");
       lcd.print("Kanal 1 unkalbibiert");
       waitFired=true;
    }
     if (!EEprom.calibrated[1]) {
       lcd.setCursor(0, 1);
       lcd.print("Kanal 2 unkalbibiert");
+      Serial.println("Kanal 2 unkalbibiert");
       waitFired=true;
    }
    if (waitFired) {
@@ -520,16 +514,16 @@ boolean readEEPROM() {
     struct MBStruct MBwahl[10];
     struct EEStruct EEprom;
   */
-  Serial.println("Lese EEPROM ...");
+  Serial.print("Lese EEPROM ...");
   int eeAddress = 0;
   EEPROM.get(eeAddress, EEprom);
   crc.reset();
   checkCRC=EEprom.CRC;
-  Serial.print("CRC read:");
+  Serial.print("  CRC read:");
   Serial.print(EEprom.CRC);
   EEprom.CRC=0; // sonst stimmt die CRC Summe nicht, sie darf nicht  mit eingerechnet werden
   crc.add((uint8_t *)&EEprom, sizeof(EEprom));
-   Serial.print("  CRC calc:");
+  Serial.print("  CRC calc:");
   Serial.println(crc.getCRC());
   if ( crc.getCRC()  != checkCRC) {
     Serial.println("EEPROM Checksumme falsch");
@@ -553,7 +547,7 @@ boolean readEEPROM() {
 void writeEEPROM() {
   int eeAddress = 0;
 
-  Serial.println("Schreibe EEPROM...");
+  Serial.print("Schreibe EEPROM...");
 
 
   EEprom.scalFactor[0] = scalFactor1;
@@ -571,7 +565,7 @@ void writeEEPROM() {
   crc.add((uint8_t *)&EEprom, sizeof(EEprom));
   EEprom.CRC = crc.getCRC();
 
-  Serial.print("CRC:");
+  Serial.print(" CRC:");
   Serial.println(EEprom.CRC);
 
   EEPROM.put(eeAddress, EEprom);
@@ -610,7 +604,6 @@ void calibration(byte kanal, float *scalFactor, byte pin) {
   stopTasks();
   lcd.clear();
   EMPTY(outstr);
-  //EMPTY(outstr);
   strcpy(outstr, "Kalibrierung Kanal");
   LCDout(outstr, 0, 0, 18);
   //LCDout("Kalibrierung Kanal",0,0,18);
@@ -628,10 +621,6 @@ void calibration(byte kanal, float *scalFactor, byte pin) {
   LCDout(outstr, 4, 2, 6);
   EMPTY(outstr);
   LCDout("MW:", 11, 2, 3);
-
-  ///?????
-  //dtostrf(rawU1,6,1,outstr);
-  //LCDout(outstr,14,2,6);
   EMPTY(outstr);
   LCDout("Scal:", 0, 3, 5);
   dtostrf(*scalFactor, 5, 3, outstr);
