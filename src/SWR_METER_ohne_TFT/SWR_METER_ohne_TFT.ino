@@ -11,6 +11,9 @@
 // Debug Modus, zusätzliche Ausgaben in der seriellen Konsole
 //#define DEBUG
 
+#define DM6TT
+//#define DL2FW
+
 // Definitionen
 // Encoder, PINA muss interuptfähig sein
 #define PINA 21
@@ -32,6 +35,7 @@
 #define LCD_D6 31
 #define LCD_D7 32
 
+#ifdef DM6TT
 // ENCODER und Interrupt Kram
 #define PINA_INPUT INPUT
 #define PINB_INPUT INPUT
@@ -45,12 +49,44 @@
 #define PINA_INT  FALLING
 #define PUSHB_INT FALLING
 
-
-// Auskoppeldämfpung in dB
 #define ATT_KOPPLER1 50
 #define ATT_KOPPLER2 30
-// welche Ref. für den AD Wandler soll genutzt werden?
+
 #define REFERENCE INTERNAL2V56
+
+float scalFactor1 = 1.397;
+
+float scalFactor2 = 1.39 ;
+
+#endif
+////////////////////////////////////////////////////////////////////////
+#ifdef DL2FW
+// ENCODER und Interrupt Kram
+#define PINA_INPUT INPUT_PULLUP
+#define PINB_INPUT INPUT_PULLUP
+#define PUSHB_INPUT INPUT_PULLUP
+
+#define PINA_INT  CHANGE
+#define PUSHB_INT FALLING
+
+#define ATT_KOPPLER1 0
+#define ATT_KOPPLER2 0
+
+
+#define REFERENCE INTERNAL1V1
+
+float scalFactor1 = 1.0;
+
+float scalFactor2 = 1.0 ;
+
+#endif
+
+
+// Auskoppeldämfpung in dB
+//#define ATT_KOPPLER1 50
+//#define ATT_KOPPLER2 30
+// welche Ref. für den AD Wandler soll genutzt werden?
+//#define REFERENCE INTERNAL2V56
 
 
 // Limits, Index des Struct Arrays
@@ -85,16 +121,12 @@
 #define START4 "  ---------------"
 
 
-//Linearisierungstabelle für den Messverstärker [db vs. rawU]
-//Arrays für die Interpolationn der Messwerte wird in der setup() Routine definiert
-//int linM0[17][17];
-
 
 // Skalierungsfaktor zur Umrechnung der Messwerte, wir später beim kalibrieren ermittelt
 //float scalFactor1 = 1.0;
-float scalFactor1 = 1.397;
+//float scalFactor1 = 1.397;
 //0.7877 ;
-float scalFactor2 = 1.39 ;
+//float scalFactor2 = 1.39 ;
 
 int frequenz= QRG; // Frequenz in MHz
 
@@ -384,7 +416,7 @@ void setup() {
 
   // Messbereichswahl
 
-   MBwahl[0].range=1E-3;   MBwahl[0].tLen=1; MBwahl[0].Nachkomma=1;  MBwahl[0].Divisor=1E-6;  strcpy(MBwahl[0].Unit,"nW\0"); strcpy(MBwahl[0].Text,"1nW\0");
+   MBwahl[0].range=1E-3;   MBwahl[0].tLen=1; MBwahl[0].Nachkomma=1;  MBwahl[0].Divisor=1E-6;  strcpy(MBwahl[0].Unit,"nW\0"); strcpy(MBwahl[0].Text,"1uW\0");
    MBwahl[1].range=1E-2;   MBwahl[1].tLen=1; MBwahl[1].Nachkomma=3;  MBwahl[1].Divisor=1E-3;  strcpy(MBwahl[1].Unit,"uW\0"); strcpy(MBwahl[1].Text,"10uW\0");
    MBwahl[2].range=1E-1;   MBwahl[2].tLen=1; MBwahl[2].Nachkomma=2;  MBwahl[2].Divisor=1E-3;  strcpy(MBwahl[2].Unit,"uW\0"); strcpy(MBwahl[2].Text,"100uW\0");
    MBwahl[3].range=1E0;    MBwahl[3].tLen=1; MBwahl[3].Nachkomma=1;  MBwahl[3].Divisor=1E-3;  strcpy(MBwahl[3].Unit,"uW\0"); strcpy(MBwahl[3].Text,"1mW\0");
@@ -426,10 +458,14 @@ void calibration(byte kanal,float *scalFactor,byte pin){
   int mp;
   float smooth = 0.1;
   boolean ready=false;
+  byte stage=1;
   
   lcd.clear();
   for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
-  LCDout("Kalibrierung Kanal",0,0,18);
+  strcpy(outstr,"Kalibrierung Kanal");
+  LCDout(outstr,0,0,18);
+  //LCDout("Kalibrierung Kanal",0,0,18);
+  for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
   itoa(kanal,outstr,10);
   LCDout(outstr,19,0,1);
   for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
@@ -454,8 +490,8 @@ void calibration(byte kanal,float *scalFactor,byte pin){
   rawU=(float)analogRead(pin)* *scalFactor;
   // wir koennen nicht auf die MW  per Task warten, wir müssen die Messungen selbst aufrufen
  //while( int(*scalFactor*10000) != int(oldScal *10000)) {// drei Stellen hinter dem Komma stabil
- while(count<3) {
-    oldScal= *scalFactor;
+ while((stage<5) || (count<50)) {  // muss bis Stage 5 laufen und dort 50 Runden drehen
+     oldScal= *scalFactor;
     mp=(float)analogRead(pin);
     rawU = (1.0 - smooth) * rawU + (smooth * mp);
     *scalFactor=ref/rawU;
@@ -465,32 +501,46 @@ void calibration(byte kanal,float *scalFactor,byte pin){
     for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
     LCDout("AK:",11,3,3);
     itoa(mp,outstr,10);
-    LCDout(outstr,15,3,6);
+    LCDout(outstr,15,3,4);
     for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
     dtostrf(*scalFactor,5,3,outstr);
     LCDout(outstr,5,3,5);
     
     // Wir erhöhen die Glaettung nach Genauigkeit
-    if (!ready && (int(*scalFactor*10) == int(oldScal *10)))
+    // 5 Stufen, count empirisch ermittelt
+    // smooth startet mit 0.1
+    // stage startet bei 1
+    
+     if ((stage==1) && (count==60) &&(int(*scalFactor*10) == int(oldScal *10))) {
       smooth=0.01;
-     else if (!ready && (int(*scalFactor*100) == int(oldScal *100)))
-      smooth=0.01;
-    else if (!ready && (int(*scalFactor*1000) == int(oldScal *1000))) {
-      smooth=0.001;
-      ready=true;
-    }
-    else if (ready && (int(*scalFactor*1000) == int(oldScal *1000))) {
-      count++;
-      //LCDout("*",0,0,1);
-    }
-    else
+      stage=2;
       count=0;
-    itoa(count,outstr,10);
-    LCDout(outstr,12,1,1);
-
+    }
+    else if ((stage==2) && (count==100) && (int(*scalFactor*100) == int(oldScal *100))){
+      smooth=0.001;
+      stage=3;
+      count=0;
+    }
+    else if ( (stage==3) && (count==100) &&(int(*scalFactor*1000) == int(oldScal *1000))) {
+      smooth=0.0001;
+      stage=4;
+      count=0;
+    }
+    else if ((stage==4) && (count==50) && (int(*scalFactor*1000) == int(oldScal *1000))) {
+      stage=5;
+      LCDout("*",13,2,1);
+      count=0;
+    }
+    count++;
     for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
-    dtostrf(smooth,5,4,outstr);
-    LCDout(outstr,14,1,5);
+    itoa(count,outstr,10);
+    //LCDout(outstr,12,1,1);
+    for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+    itoa(stage,outstr,10);
+    LCDout(outstr,12,1,1);
+    for(i=0;i<sizeof(outstr);i++) outstr[i]='\0';
+    dtostrf(smooth,4,4,outstr);
+    LCDout(outstr,14,1,6);
     delay(40);
     if (fired) {
        fired=false;
@@ -787,9 +837,7 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   //int lbg_draw_val_limited;
   
   resetCursor();
-  // Frequenzkorrektur
-  //rawU1=freq_correction(rawU1,frequenz, linM0);
-  //rawU2=freq_correction(rawU2,frequenz, linM0);
+  
     // Lienarisierung aufrufen.
   // Länge der LinM Struct kann nicht in der Funktion bestimmt werden (3.Argument)
   U1lin = linearize(rawU1, linM0, sizeof(linM0) / sizeof(struct LinStruct));
