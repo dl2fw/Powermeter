@@ -109,7 +109,7 @@ float scalFactor2 = 1.0 ;
 // Kalibrierung
 #define CALIBRATE 4 // 4. Eintarg in limM0 --> -10dB
 
-#define QRG 5 // Test Frequenz MHz
+#define QRG 5 // Test Frequenz Index des QRGarray
 
 // Anzeigeformate
 // 2 --> 3 Darsatellungen 0,1,2
@@ -135,7 +135,8 @@ float scalFactor2 = 1.0 ;
 //0.7877 ;
 //float scalFactor2 = 1.39 ;
 
-int frequenz = QRG; // Frequenz in MHz
+float frequenz =0; // Frequenz in MHz, wird aus QRGarray bestimmt
+byte frequenzIdx=QRG; // Index in QRGArry
 
 
 const float smooth = 0.004;
@@ -169,8 +170,14 @@ struct EEStruct {
   byte CRC;            // Pruefsumme
 };
 
+struct QRGstruct {
+  float frequency;      // Frequenz in KHz
+  char Text[10];      // Anzeigetext
+};
+
 struct MBStruct MBwahl[10];
 struct EEStruct EEprom;
+struct QRGstruct QRGarray[17];
 
 int posi = 0;
 
@@ -248,8 +255,19 @@ void isr ()
 }  // end of isr
 
 void check_encoder() {
+  byte idx;
   if (fired) { // es wurde die Taste gedrueckt
     fired = false;
+    if (screenNo == 0 ) { // Kruecke, um den Eingang auszuwaehlen, wandert später in die State Machine
+      frequenzIdx=chooseQRG(frequenzIdx);
+      frequenz=QRGarray[frequenzIdx].frequency;
+      Serial.print("Frequenz:");
+      Serial.print(frequenz);
+      Serial.print("  Index:");
+      Serial.println(frequenzIdx);
+      writeEEPROM();
+      screenNo = 99;
+    }
     if (screenNo == 1) { // Kruecke, um den Eingang auszuwaehlen, wandert später in die State Machine
       calibration(screenNo, &scalFactor1, PIN_A1);
       screenNo = 0;
@@ -437,7 +455,27 @@ void setup() {
   MBwahl[7].range = 1E4;    MBwahl[7].tLen = 1; MBwahl[7].Nachkomma = 3;  MBwahl[7].Divisor = 1E3;   strcpy(MBwahl[7].Unit, "W\0");  strcpy(MBwahl[7].Text, "10W\0");
   MBwahl[8].range = 1E5;    MBwahl[8].tLen = 1; MBwahl[8].Nachkomma = 2;  MBwahl[8].Divisor = 1E3;   strcpy(MBwahl[8].Unit, "W\0");  strcpy(MBwahl[8].Text, "100W\0");
 
+  // Frequnzen
+  QRGarray[0].frequency=1.800;      strcpy(QRGarray[0].Text,"160m\0");
+  QRGarray[1].frequency=3.500;      strcpy(QRGarray[1].Text,"80m\0");
+  QRGarray[2].frequency=7.000;      strcpy(QRGarray[2].Text,"40m\0");
+  QRGarray[3].frequency=10.000;     strcpy(QRGarray[3].Text,"30m\0");
+  QRGarray[4].frequency=14.000;     strcpy(QRGarray[4].Text,"20m\0");
+  QRGarray[5].frequency=18.000;     strcpy(QRGarray[5].Text,"17m\0");
+  QRGarray[6].frequency=21.000;     strcpy(QRGarray[6].Text,"15m\0");
+  QRGarray[7].frequency=24.000;     strcpy(QRGarray[7].Text,"12m\0");
+  QRGarray[8].frequency=28.000;     strcpy(QRGarray[8].Text,"10m\0");
+  QRGarray[9].frequency=50.000;     strcpy(QRGarray[9].Text,"6m\0");
+  QRGarray[10].frequency=72.000;    strcpy(QRGarray[10].Text,"4m\0");
+  QRGarray[11].frequency=144.000;   strcpy(QRGarray[11].Text,"2m\0");
+  QRGarray[12].frequency=433.000;   strcpy(QRGarray[12].Text,"70cm\0");
+  QRGarray[13].frequency=1200.000;  strcpy(QRGarray[13].Text,"23cm\0");
+  QRGarray[14].frequency=2400.000;  strcpy(QRGarray[14].Text,"13cm\0");
+  QRGarray[15].frequency=5000.000;  strcpy(QRGarray[15].Text,"6cm\0");
+  QRGarray[16].frequency=10000.000; strcpy(QRGarray[16].Text,"3cm\0");
 
+  frequenz=QRGarray[QRG].frequency;
+  
 
   // Hier das eigentliche "Multitasking"
   // alle 1000ms Ausgabe der Rohsignal an den PC
@@ -538,7 +576,10 @@ boolean readEEPROM() {
     AttKanal2 = EEprom.attKanal[1];
     Koppler1 = EEprom.attKoppler[0];
     Koppler2 = EEprom.attKoppler[1];
-    frequenz = EEprom.SWRqrg;
+    frequenzIdx = EEprom.SWRqrg;
+    frequenz=QRGarray[frequenzIdx].frequency;
+    //Serial.print("QRG idx:");
+    //Serial.println(frequenzIdx);
 
     return true;
   }
@@ -556,9 +597,9 @@ void writeEEPROM() {
   EEprom.attKanal[1] = AttKanal2;
   EEprom.attKoppler[0] = Koppler1;
   EEprom.attKoppler[1] = Koppler2;
-  EEprom.SWRqrg = frequenz;
-  EEprom.qrg[0]=frequenz;
-  EEprom.qrg[1]=frequenz;
+  EEprom.SWRqrg = frequenzIdx;
+  EEprom.qrg[0]=frequenzIdx;
+  EEprom.qrg[1]=frequenzIdx;
   EEprom.CRC=0;
 
   crc.reset();
@@ -585,6 +626,64 @@ void stopTasks() {
   t.stop(take_ads);
   t.stop(write_lcd);
   t.stop(check_encoder);
+}
+
+byte chooseQRG(byte idx) {
+// Frequenzauswahl mit Encoder, Werte aus dem Array QRGarray
+  byte qrgIdx=0;
+  float freq=QRGarray[idx].frequency;
+  char  *text=QRGarray[idx].Text;
+  byte i;
+  char outstr[21];
+  char outstr1[21];
+  byte maxIdx=sizeof(QRGarray) / sizeof(struct QRGstruct) -1 ; // groesster Index bei den Frequenzen
+  stopTasks();
+  lcd.clear();
+  EMPTY(outstr);
+  strcpy(outstr, "Frequenzbereich");
+  LCDout(outstr, 0, 0, 18);
+  EMPTY(outstr);
+  while(!fired) { //Solange keine Taste gerueckt ist, bleiben wir hier
+    if (turned) {
+       turned=false;
+      if (up)
+       idx < maxIdx ? idx++ : (idx=0);
+      else
+        idx > 0 ? idx-- : (idx = maxIdx);
+    }
+    freq=QRGarray[idx].frequency;
+    text=QRGarray[idx].Text;
+    EMPTY(outstr);
+    strcpy(outstr, "Band:");
+    LCDout(outstr, 0, 1, 5);
+    EMPTY(outstr);
+    strcat(outstr, text);
+    LCDout("          ", 6, 1, 10);
+    LCDout(outstr, 6, 1, 10);
+    EMPTY(outstr);
+    strcpy(outstr,"Freq:");
+    LCDout(outstr, 0, 2, 5);
+    EMPTY(outstr);
+    dtostrf(freq, 5, 1, outstr);
+    LCDout("          ", 6, 2, 10);
+    LCDout(outstr, 6, 2, 5);
+    LCDout("MHz", 12, 2, 5);
+    EMPTY(outstr);
+    strcpy(outstr,"Idx:");
+    LCDout(outstr, 0, 3, 5);
+    EMPTY(outstr);
+    itoa(idx,outstr,10);
+    LCDout("     ", 6, 3, 5);
+    LCDout(outstr, 6 , 3, 5);
+   
+    while(!turned && !fired) {};  // wir warten auf Tastendruck oder Encoder
+   
+  }  
+   // Tasks wieder einschalten
+  startTasks();
+  return idx;  
+  fired=false;
+  turned=false; 
 }
 
 void calibration(byte kanal, float *scalFactor, byte pin) {
@@ -616,6 +715,21 @@ void calibration(byte kanal, float *scalFactor, byte pin) {
   LCDout(outstr, 2, 1, 5);
   LCDout("dBm", 7, 1, 3);
   EMPTY(outstr);
+  LCDout("Bitte Signal ...",0,2,19);
+  LCDout("Taste druecken",0,3,19);
+  while(!fired && !turned) { }
+  if (turned) {
+      turned=false;
+      LCDout("                ",0,2,19);
+      LCDout("              ",0,3,19);
+      LCDout("Abbruch...",0,3,17);
+      delay(1000);
+      startTasks();
+      return;
+  }
+  fired=false;
+  LCDout("                ",0,2,19);
+  LCDout("              ",0,3,19);
   LCDout("Ref:", 0, 2, 4);
   dtostrf(ref, 6, 1, outstr);
   LCDout(outstr, 4, 2, 6);
@@ -829,6 +943,8 @@ void LCDout (char *outstring, byte x, byte y, byte len) {
 
   // Leerstring zusammenbauen
   EMPTY(empty);
+  //for (i=0;i<sizeof(empty);i++)
+  //  empty[i]=" ";
   lcd.setCursor(x, y);
   lcd.print(empty);
   lcd.setCursor(x, y);
@@ -1040,7 +1156,8 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   P2mW_out = P2mW / MBwahl[MB[1]].Divisor;
   VSWR = abs((pow(10, ((U2 - U1) / 10.0)) + 1) / (pow(10, ((U2 - U1) / 10.0)) - 0.999999));
   // Ausgabe auf der verschiedenen Screens
-  if (screenNo != oldScreenNo) {
+  if ((screenNo==99) || (screenNo != oldScreenNo)) {
+    if (screenNo==99) screenNo=oldScreenNo; // 99 refreshed den Bildschirm
     lcd.clear();
     oldScreenNo = screenNo;
     LcdBarGraph lbgPWR(&lcd, 13, 0, 3);
