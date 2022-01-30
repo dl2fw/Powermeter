@@ -5,6 +5,8 @@
 #include <LiquidCrystal.h>
 #include <LcdBarGraph.h>
 #include <stdio.h>
+#include "CRC8.h"
+#include <EEPROM.h>
 
 
 
@@ -107,11 +109,11 @@ float scalFactor2 = 1.0 ;
 // Kalibrierung
 #define CALIBRATE 4 // 4. Eintarg in limM0 --> -10dB
 
-#define QRG 5 // Test Frequenz MHz
+#define QRG 5 // Test Frequenz Index des QRGarray
 
 // Anzeigeformate
 // 2 --> 3 Darsatellungen 0,1,2
-#define MAXSCREEN 2 
+#define MAXSCREEN 2
 
 
 
@@ -133,7 +135,8 @@ float scalFactor2 = 1.0 ;
 //0.7877 ;
 //float scalFactor2 = 1.39 ;
 
-int frequenz= QRG; // Frequenz in MHz
+float frequenz =0; // Frequenz in MHz, wird aus QRGarray bestimmt
+byte frequenzIdx=QRG; // Index in QRGArry
 
 
 const float smooth = 0.004;
@@ -147,26 +150,34 @@ struct LinStruct {
 struct LinStruct linM0[17];
 
 // Messbereichswahl
-/*
+
 struct MBStruct {
-    float minP;         // Bereich Anfang
-    float maxP;         // Bereich Ende
-    int tLen;           // min. Zeitraum
-    byte Nachkomma;     // anzuzeigende Nachkommastellen
-    float Divisor;     // Devisor für die Darstellung
-    String Unit;        // Einheit
+  float range;         // Bereich Anfang= *0.05 Ende *0.8
+  int tLen;            // min. Zeitraum
+  byte Nachkomma;      // anzuzeigende Nachkommastellen
+  float Divisor;       // Devisor für die Darstellung
+  char Unit[10];        // Einheit
+  char Text[10];        // Anzeigetext des Bereiches
 };
-*/
-struct MBStruct {
-    float range;         // Bereich Anfang= *0.05 Ende *0.8
-    int tLen;            // min. Zeitraum
-    byte Nachkomma;      // anzuzeigende Nachkommastellen
-    float Divisor;       // Devisor für die Darstellung
-    char Unit[10];        // Einheit
-    char Text[10];        // Anzeigetext des Bereiches
+
+struct EEStruct {
+  float scalFactor[2];  // Skalierung der beiden Kanaäle
+  float attKanal[2];    //Daempfungskonstatnte pro Kanal
+  float attKoppler[2];  // Richtkoppler Auskopplung
+  byte qrg[2];          // Messfrewuenzen pro Kanal
+  byte SWRqrg;          // Messfrequenz für die SWR Messung
+  boolean calibrated[2]; // sind die Kanäle kalibriert?
+  byte CRC;            // Pruefsumme
+};
+
+struct QRGstruct {
+  float frequency;      // Frequenz in KHz
+  char Text[10];      // Anzeigetext
 };
 
 struct MBStruct MBwahl[10];
+struct EEStruct EEprom;
+struct QRGstruct QRGarray[17];
 
 int posi = 0;
 
@@ -193,6 +204,8 @@ float U2 = 0.0;
 // Auskoppeldämpfung der Koppler
 float Koppler1 = ATT_KOPPLER1;  //dB
 float Koppler2 = ATT_KOPPLER2;  //dB
+float AttKanal1 = 0;
+float AttKanal2 = 0;
 
 
 volatile boolean turned;   // rotary was turned
@@ -210,10 +223,12 @@ boolean items_changed = false;
 //############################################################
 
 
+CRC8 crc;
+
 
 // Anzeige
-byte screenNo=0; // Auswahl der Darstellung, max. Wert MAXSCREEN
-byte oldScreenNo=0;
+byte screenNo = 0; // Auswahl der Darstellung, max. Wert MAXSCREEN
+byte oldScreenNo = 0;
 
 // Interrupt Service Routine - für den Button des Encoder
 void isrB ()
@@ -240,114 +255,125 @@ void isr ()
 }  // end of isr
 
 void check_encoder() {
-  if(fired) { // es wurde die Taste gedrueckt
-      fired=false;
-      if (screenNo==1) { // Kruecke, um den Eingang auszuwaehlen, wandert später in die State Machine
-        calibration(screenNo,&scalFactor1,PIN_A1);
-        screenNo=0;
-      }
-      else if(screenNo==2) {
-          calibration(screenNo,&scalFactor2,PIN_A2);
-          screenNo=0;
-      }
+  byte idx;
+  if (fired) { // es wurde die Taste gedrueckt
+    fired = false;
+    if (screenNo == 0 ) { // Kruecke, um den Eingang auszuwaehlen, wandert später in die State Machine
+      frequenzIdx=chooseQRG(frequenzIdx);
+      frequenz=QRGarray[frequenzIdx].frequency;
+      Serial.print("Frequenz:");
+      Serial.print(frequenz);
+      Serial.print("  Index:");
+      Serial.println(frequenzIdx);
+      writeEEPROM();
+      screenNo = 99;
+    }
+    if (screenNo == 1) { // Kruecke, um den Eingang auszuwaehlen, wandert später in die State Machine
+      calibration(screenNo, &scalFactor1, PIN_A1);
+      screenNo = 0;
+    }
+    else if (screenNo == 2) {
+      calibration(screenNo, &scalFactor2, PIN_A2);
+      screenNo = 0;
+    }
   }
-  fired=false;
+  fired = false;
   if (turned)
   {
-//    if (!edit && !change_value) { // wir sind nicht im Editiermodus
-   /*   if (up) {
-        if (Menu_page < 3) Menu_page++;  //dann schalten wir die Menüseite um - wenn wir später mehrere haben - Anzahl noch hardkodiert
-      }
-      else if (Menu_page > 1) Menu_page--;
- */
-      // wir sind im Anzeigemodus, wir waehlen das Anzeigeformat
-      if(up) 
-        screenNo<MAXSCREEN? screenNo++ :(screenNo=0); 
-      else 
-        screenNo>0? screenNo-- :(screenNo=MAXSCREEN); 
-      //Serial.print("Screen:");
-      //Serial.println(screenNo);
- //   }
-/*    if (edit && !change_value) { // wir sind im Editiermodus uns wählen das zu ändernde Item aus - Anzahl noch hardkodiert
+    //    if (!edit && !change_value) { // wir sind nicht im Editiermodus
+    /*   if (up) {
+         if (Menu_page < 3) Menu_page++;  //dann schalten wir die Menüseite um - wenn wir später mehrere haben - Anzahl noch hardkodiert
+       }
+       else if (Menu_page > 1) Menu_page--;
+    */
+    // wir sind im Anzeigemodus, wir waehlen das Anzeigeformat
+    if (up)
+      screenNo < MAXSCREEN ? screenNo++ : (screenNo = 0);
+    else
+      screenNo > 0 ? screenNo-- : (screenNo = MAXSCREEN);
+    //Serial.print("Screen:");
+    //Serial.println(screenNo);
+    //   }
+    /*    if (edit && !change_value) { // wir sind im Editiermodus uns wählen das zu ändernde Item aus - Anzahl noch hardkodiert
 
-      if (up) {
-        if (item_pos < 3) item_pos++;
-      }
-      else if (item_pos > 1) item_pos--;
+          if (up) {
+            if (item_pos < 3) item_pos++;
+          }
+          else if (item_pos > 1) item_pos--;
 
-      resetCursor();
-    }
-    if (edit && change_value) { // wir sind im Editiermodus und haben zusätzlich ein Item zum Ändern ausgewählt
+          resetCursor();
+        }
+        if (edit && change_value) { // wir sind im Editiermodus und haben zusätzlich ein Item zum Ändern ausgewählt
 
-      if (up) delta_value++;
-      else delta_value--;
+          if (up) delta_value++;
+          else delta_value--;
 
-    }
-*/  
+        }
+    */
     turned = false;
-  } 
-  
-/*
-  if (fired && change_value) {
-    change_value = false;
-    fired = false;
-
   }
 
- if(fired && edit && !change_value) { // rechts unten : EXIT
-    if (item_pos == 4) {  // exit !
-      edit = false;
+  /*
+    if (fired && change_value) {
       change_value = false;
       fired = false;
-      lcd.noBlink();
-      lcd.noCursor();
-      items_changed = false;
+
+    }
+
+    if(fired && edit && !change_value) { // rechts unten : EXIT
+      if (item_pos == 4) {  // exit !
+        edit = false;
+        change_value = false;
+        fired = false;
+        lcd.noBlink();
+        lcd.noCursor();
+        items_changed = false;
+        }
+
+       if (fired && (item_pos == 3) && items_changed){  // links unten : SAVE
+
+         automatik=temp_automatik;// lokale Änderungen speichern!
+         Man_state = temp_Man_state;
+         items_changed = false;
+         fired = false;
+        }
+
+
+      if (fired && !change_value && (item_pos == 1)) { // Koppler 1  soll geändert werden
+        change_value = true;
+        fired = false;
+        items_changed = true;
       }
-    
-     if (fired && (item_pos == 3) && items_changed){  // links unten : SAVE
-
-       automatik=temp_automatik;// lokale Änderungen speichern!
-       Man_state = temp_Man_state;
-       items_changed = false;
-       fired = false;
+      if (fired && !change_value && (item_pos == 3)) { // Koppler 2 soll geändert werden
+        change_value = true;
+        fired = false;
+        items_changed = true;
       }
-    
-
-    if (fired && !change_value && (item_pos == 1)) { // Koppler 1  soll geändert werden
-      change_value = true;
-      fired = false;
-      items_changed = true;
-    }
-    if (fired && !change_value && (item_pos == 3)) { // Koppler 2 soll geändert werden
-      change_value = true;
-      fired = false;
-      items_changed = true;
-    }
-    if (fired && !change_value && (item_pos == 2)) { // Messfrequenz soll geändert werden
-      change_value = true;
-      fired = false;
-      items_changed = true;
-    }
-  }
-
-  if (change_value) {
-
-    if (item_pos == 1) {  // Koppler 1 soll geändert werden
-
-      Koppler1 = Koppler1 + delta_value * 0.1;
-      if (Koppler1 < 0.0)  Koppler1 = 0.0;
-      delta_value = 0;
-
-    }
-    if (item_pos == 3) {  // Koppler 2 soll geändert werden
-
-      Koppler2 = Koppler2 + delta_value * 0.1;
-      if (Koppler1 < 0.0)  Koppler1 = 0.0;
-      delta_value = 0;
+      if (fired && !change_value && (item_pos == 2)) { // Messfrequenz soll geändert werden
+        change_value = true;
+        fired = false;
+        items_changed = true;
+      }
     }
 
-  }
-*/
+    if (change_value) {
+
+      if (item_pos == 1) {  // Koppler 1 soll geändert werden
+
+        Koppler1 = Koppler1 + delta_value * 0.1;
+        if (Koppler1 < 0.0)  Koppler1 = 0.0;
+        delta_value = 0;
+
+      }
+      if (item_pos == 3) {  // Koppler 2 soll geändert werden
+
+        Koppler2 = Koppler2 + delta_value * 0.1;
+        if (Koppler1 < 0.0)  Koppler1 = 0.0;
+        delta_value = 0;
+      }
+
+    }
+  */
 
 }
 
@@ -358,11 +384,12 @@ LcdBarGraph lbgPWR(&lcd, 13, 0, 3); //
 
 
 void setup() {
+  boolean waitFired=false; // warte auf Tastendruck
   Serial.begin(115200);
   // -- initializing the LCD
   Serial.println("Start PowerMeter");
 #ifdef DEBUG
-  
+
 #endif
   Serial.println("---------------------------------------------------------");
   lcd.begin(20, 4);
@@ -391,10 +418,7 @@ void setup() {
   lcd.print(START2);
   lcd.setCursor(0, 2);
   lcd.print(START3);
-  lcd.setCursor(0, 3);
-  lcd.print(START4);
-  delay(2000);
-  lcd.clear();
+  
 
   linM0[0].dB = 10; linM0[0].ADnorm = 195.2;
   linM0[1].dB = 5; linM0[1].ADnorm = 208.6;
@@ -415,23 +439,43 @@ void setup() {
   linM0[16].dB = -70; linM0[16].ADnorm = 981.6;
 
   // Startpunkt fuer Messbereichswahl
-  MB[0]=4;
-  MB[1]=4;
+  MB[0] = 4;
+  MB[1] = 4;
 
 
   // Messbereichswahl
 
-   MBwahl[0].range=1E-3;   MBwahl[0].tLen=1; MBwahl[0].Nachkomma=1;  MBwahl[0].Divisor=1E-6;  strcpy(MBwahl[0].Unit,"nW\0"); strcpy(MBwahl[0].Text,"1uW\0");
-   MBwahl[1].range=1E-2;   MBwahl[1].tLen=1; MBwahl[1].Nachkomma=3;  MBwahl[1].Divisor=1E-3;  strcpy(MBwahl[1].Unit,"uW\0"); strcpy(MBwahl[1].Text,"10uW\0");
-   MBwahl[2].range=1E-1;   MBwahl[2].tLen=1; MBwahl[2].Nachkomma=2;  MBwahl[2].Divisor=1E-3;  strcpy(MBwahl[2].Unit,"uW\0"); strcpy(MBwahl[2].Text,"100uW\0");
-   MBwahl[3].range=1E0;    MBwahl[3].tLen=1; MBwahl[3].Nachkomma=1;  MBwahl[3].Divisor=1E-3;  strcpy(MBwahl[3].Unit,"uW\0"); strcpy(MBwahl[3].Text,"1mW\0");
-   MBwahl[4].range=1E1;    MBwahl[4].tLen=1; MBwahl[4].Nachkomma=3;  MBwahl[4].Divisor=1E0;   strcpy(MBwahl[4].Unit,"mW\0"); strcpy(MBwahl[4].Text,"10mW\0");
-   MBwahl[5].range=1E2;    MBwahl[5].tLen=1; MBwahl[5].Nachkomma=2;  MBwahl[5].Divisor=1E0;   strcpy(MBwahl[5].Unit,"mW\0"); strcpy(MBwahl[5].Text,"100mW\0");
-   MBwahl[6].range=1E3;    MBwahl[6].tLen=1; MBwahl[6].Nachkomma=1;  MBwahl[6].Divisor=1E0;   strcpy(MBwahl[6].Unit,"mW\0"); strcpy(MBwahl[6].Text,"1W\0");
-   MBwahl[7].range=1E4;    MBwahl[7].tLen=1; MBwahl[7].Nachkomma=3;  MBwahl[7].Divisor=1E3;   strcpy(MBwahl[7].Unit,"W\0");  strcpy(MBwahl[7].Text,"10W\0");
-   MBwahl[8].range=1E5;    MBwahl[8].tLen=1; MBwahl[8].Nachkomma=2;  MBwahl[8].Divisor=1E3;   strcpy(MBwahl[8].Unit,"W\0");  strcpy(MBwahl[8].Text,"100W\0");
+  MBwahl[0].range = 1E-3;   MBwahl[0].tLen = 1; MBwahl[0].Nachkomma = 1;  MBwahl[0].Divisor = 1E-6;  strcpy(MBwahl[0].Unit, "nW\0"); strcpy(MBwahl[0].Text, "1uW\0");
+  MBwahl[1].range = 1E-2;   MBwahl[1].tLen = 1; MBwahl[1].Nachkomma = 3;  MBwahl[1].Divisor = 1E-3;  strcpy(MBwahl[1].Unit, "uW\0"); strcpy(MBwahl[1].Text, "10uW\0");
+  MBwahl[2].range = 1E-1;   MBwahl[2].tLen = 1; MBwahl[2].Nachkomma = 2;  MBwahl[2].Divisor = 1E-3;  strcpy(MBwahl[2].Unit, "uW\0"); strcpy(MBwahl[2].Text, "100uW\0");
+  MBwahl[3].range = 1E0;    MBwahl[3].tLen = 1; MBwahl[3].Nachkomma = 1;  MBwahl[3].Divisor = 1E-3;  strcpy(MBwahl[3].Unit, "uW\0"); strcpy(MBwahl[3].Text, "1mW\0");
+  MBwahl[4].range = 1E1;    MBwahl[4].tLen = 1; MBwahl[4].Nachkomma = 3;  MBwahl[4].Divisor = 1E0;   strcpy(MBwahl[4].Unit, "mW\0"); strcpy(MBwahl[4].Text, "10mW\0");
+  MBwahl[5].range = 1E2;    MBwahl[5].tLen = 1; MBwahl[5].Nachkomma = 2;  MBwahl[5].Divisor = 1E0;   strcpy(MBwahl[5].Unit, "mW\0"); strcpy(MBwahl[5].Text, "100mW\0");
+  MBwahl[6].range = 1E3;    MBwahl[6].tLen = 1; MBwahl[6].Nachkomma = 1;  MBwahl[6].Divisor = 1E0;   strcpy(MBwahl[6].Unit, "mW\0"); strcpy(MBwahl[6].Text, "1W\0");
+  MBwahl[7].range = 1E4;    MBwahl[7].tLen = 1; MBwahl[7].Nachkomma = 3;  MBwahl[7].Divisor = 1E3;   strcpy(MBwahl[7].Unit, "W\0");  strcpy(MBwahl[7].Text, "10W\0");
+  MBwahl[8].range = 1E5;    MBwahl[8].tLen = 1; MBwahl[8].Nachkomma = 2;  MBwahl[8].Divisor = 1E3;   strcpy(MBwahl[8].Unit, "W\0");  strcpy(MBwahl[8].Text, "100W\0");
 
+  // Frequnzen
+  QRGarray[0].frequency=1.800;      strcpy(QRGarray[0].Text,"160m\0");
+  QRGarray[1].frequency=3.500;      strcpy(QRGarray[1].Text,"80m\0");
+  QRGarray[2].frequency=7.000;      strcpy(QRGarray[2].Text,"40m\0");
+  QRGarray[3].frequency=10.000;     strcpy(QRGarray[3].Text,"30m\0");
+  QRGarray[4].frequency=14.000;     strcpy(QRGarray[4].Text,"20m\0");
+  QRGarray[5].frequency=18.000;     strcpy(QRGarray[5].Text,"17m\0");
+  QRGarray[6].frequency=21.000;     strcpy(QRGarray[6].Text,"15m\0");
+  QRGarray[7].frequency=24.000;     strcpy(QRGarray[7].Text,"12m\0");
+  QRGarray[8].frequency=28.000;     strcpy(QRGarray[8].Text,"10m\0");
+  QRGarray[9].frequency=50.000;     strcpy(QRGarray[9].Text,"6m\0");
+  QRGarray[10].frequency=72.000;    strcpy(QRGarray[10].Text,"4m\0");
+  QRGarray[11].frequency=144.000;   strcpy(QRGarray[11].Text,"2m\0");
+  QRGarray[12].frequency=433.000;   strcpy(QRGarray[12].Text,"70cm\0");
+  QRGarray[13].frequency=1200.000;  strcpy(QRGarray[13].Text,"23cm\0");
+  QRGarray[14].frequency=2400.000;  strcpy(QRGarray[14].Text,"13cm\0");
+  QRGarray[15].frequency=5000.000;  strcpy(QRGarray[15].Text,"6cm\0");
+  QRGarray[16].frequency=10000.000; strcpy(QRGarray[16].Text,"3cm\0");
 
+  frequenz=QRGarray[QRG].frequency;
+  
 
   // Hier das eigentliche "Multitasking"
   // alle 1000ms Ausgabe der Rohsignal an den PC
@@ -439,7 +483,49 @@ void setup() {
   // alle 100ms das LCD beschreiben
   // alle 20ms  auf Encoderereignisse reagieren
 
- startTasks();
+  startTasks();
+
+  if (!readEEPROM()) {
+    lcd.setCursor(0, 3);
+    lcd.print("EEPROM leer, init..");
+    EEprom.calibrated[0]=false;
+    EEprom.calibrated[1]=false; 
+    writeEEPROM();
+   
+    if (!readEEPROM()) {
+      lcd.setCursor(0, 3);
+      lcd.print("EEPROM ERROR!!!   ");
+      while(1);
+    }
+  }
+  else {
+    lcd.setCursor(0, 3);
+    lcd.print("Lese EEPROM...");
+  }
+   delay(2000);
+   lcd.clear();
+   // Sind die Kanaele kalibiert?
+   
+   if (!EEprom.calibrated[0]) {
+      lcd.setCursor(0, 0);
+      Serial.println("Kanal 1 unkalbibiert");
+      lcd.print("Kanal 1 unkalbibiert");
+      waitFired=true;
+   }
+    if (!EEprom.calibrated[1]) {
+      lcd.setCursor(0, 1);
+      lcd.print("Kanal 2 unkalbibiert");
+      Serial.println("Kanal 2 unkalbibiert");
+      waitFired=true;
+   }
+   if (waitFired) {
+      lcd.setCursor(0, 3);
+      lcd.print("Taste druecken");
+      while(!fired) {};
+      fired=false;
+   }
+   lcd.clear();
+   
 }
 
 void loop()
@@ -448,6 +534,85 @@ void loop()
   t.update(); //timer handling!	mehr passiert in der Hauptschleife nicht, Multitasking läuft im Hintergrund
 
 }
+
+boolean readEEPROM() {
+  byte checkCRC=0;
+
+  /*
+    struct EEStruct {
+      float scalFactor[2];  // Skalierung der beiden Kanaäle
+      float attKanal[2];    //Daempfungskonstatnte pro Kanal
+      float attKoppler[2];  // Richtkoppler Auskopplung
+      byte qrg[2];          // Messfrewuenzen pro Kanal
+      byte SWRqrg;          // Messfrequenz für die SWR Messung
+      byte CRC;            // Pruefsumme
+    };
+
+
+    struct MBStruct MBwahl[10];
+    struct EEStruct EEprom;
+  */
+  Serial.print("Lese EEPROM ...");
+  int eeAddress = 0;
+  EEPROM.get(eeAddress, EEprom);
+  crc.reset();
+  checkCRC=EEprom.CRC;
+  Serial.print("  CRC read:");
+  Serial.print(EEprom.CRC);
+  EEprom.CRC=0; // sonst stimmt die CRC Summe nicht, sie darf nicht  mit eingerechnet werden
+  crc.add((uint8_t *)&EEprom, sizeof(EEprom));
+  Serial.print("  CRC calc:");
+  Serial.println(crc.getCRC());
+  if ( crc.getCRC()  != checkCRC) {
+    Serial.println("EEPROM Checksumme falsch");
+    return false;
+  }
+  else {
+    Serial.println("EEPROM Checksumme OK");
+    // setzen der globalen Variablen
+    scalFactor1 = EEprom.scalFactor[0];
+    scalFactor2 = EEprom.scalFactor[1];
+    AttKanal1 = EEprom.attKanal[0];
+    AttKanal2 = EEprom.attKanal[1];
+    Koppler1 = EEprom.attKoppler[0];
+    Koppler2 = EEprom.attKoppler[1];
+    frequenzIdx = EEprom.SWRqrg;
+    frequenz=QRGarray[frequenzIdx].frequency;
+    //Serial.print("QRG idx:");
+    //Serial.println(frequenzIdx);
+
+    return true;
+  }
+}
+
+void writeEEPROM() {
+  int eeAddress = 0;
+
+  Serial.print("Schreibe EEPROM...");
+
+
+  EEprom.scalFactor[0] = scalFactor1;
+  EEprom.scalFactor[1] = scalFactor2;
+  EEprom.attKanal[0] = AttKanal1;
+  EEprom.attKanal[1] = AttKanal2;
+  EEprom.attKoppler[0] = Koppler1;
+  EEprom.attKoppler[1] = Koppler2;
+  EEprom.SWRqrg = frequenzIdx;
+  EEprom.qrg[0]=frequenzIdx;
+  EEprom.qrg[1]=frequenzIdx;
+  EEprom.CRC=0;
+
+  crc.reset();
+  crc.add((uint8_t *)&EEprom, sizeof(EEprom));
+  EEprom.CRC = crc.getCRC();
+
+  Serial.print(" CRC:");
+  Serial.println(EEprom.CRC);
+
+  EEPROM.put(eeAddress, EEprom);
+
+}
+
 
 void startTasks () {
   t.every(1000, write_raw_seriell, 0);
@@ -458,122 +623,192 @@ void startTasks () {
 
 void stopTasks() {
   t.stop(write_raw_seriell);
-  t.stop(take_ads); 
-  t.stop(write_lcd); 
-  t.stop(check_encoder); 
+  t.stop(take_ads);
+  t.stop(write_lcd);
+  t.stop(check_encoder);
 }
 
-void calibration(byte kanal,float *scalFactor,byte pin){
+byte chooseQRG(byte idx) {
+// Frequenzauswahl mit Encoder, Werte aus dem Array QRGarray
+  byte qrgIdx=0;
+  float freq=QRGarray[idx].frequency;
+  char  *text=QRGarray[idx].Text;
+  byte i;
+  char outstr[21];
+  char outstr1[21];
+  byte maxIdx=sizeof(QRGarray) / sizeof(struct QRGstruct) -1 ; // groesster Index bei den Frequenzen
+  stopTasks();
+  lcd.clear();
+  EMPTY(outstr);
+  strcpy(outstr, "Frequenzbereich");
+  LCDout(outstr, 0, 0, 18);
+  EMPTY(outstr);
+  while(!fired) { //Solange keine Taste gerueckt ist, bleiben wir hier
+    if (turned) {
+       turned=false;
+      if (up)
+       idx < maxIdx ? idx++ : (idx=0);
+      else
+        idx > 0 ? idx-- : (idx = maxIdx);
+    }
+    freq=QRGarray[idx].frequency;
+    text=QRGarray[idx].Text;
+    EMPTY(outstr);
+    strcpy(outstr, "Band:");
+    LCDout(outstr, 0, 1, 5);
+    EMPTY(outstr);
+    strcat(outstr, text);
+    LCDout("          ", 6, 1, 10);
+    LCDout(outstr, 6, 1, 10);
+    EMPTY(outstr);
+    strcpy(outstr,"Freq:");
+    LCDout(outstr, 0, 2, 5);
+    EMPTY(outstr);
+    dtostrf(freq, 5, 1, outstr);
+    LCDout("          ", 6, 2, 10);
+    LCDout(outstr, 6, 2, 5);
+    LCDout("MHz", 12, 2, 5);
+    EMPTY(outstr);
+    strcpy(outstr,"Idx:");
+    LCDout(outstr, 0, 3, 5);
+    EMPTY(outstr);
+    itoa(idx,outstr,10);
+    LCDout("     ", 6, 3, 5);
+    LCDout(outstr, 6 , 3, 5);
+   
+    while(!turned && !fired) {};  // wir warten auf Tastendruck oder Encoder
+   
+  }  
+   // Tasks wieder einschalten
+  startTasks();
+  return idx;  
+  fired=false;
+  turned=false; 
+}
+
+void calibration(byte kanal, float *scalFactor, byte pin) {
   // Kalibrierung des Kanals bei limM0[CALIBRATE]
-  float dbM=linM0[CALIBRATE].dB;
-  float ref=linM0[CALIBRATE].ADnorm;
+  float dbM = linM0[CALIBRATE].dB;
+  float ref = linM0[CALIBRATE].ADnorm;
   char outstr[30];
-  byte i,count=0;
-  float oldScal=-999;
-  float rawU=linM0[HIGH_LIMIT].ADnorm;
+  byte i, count = 0;
+  float oldScal = -999;
+  float rawU = linM0[HIGH_LIMIT].ADnorm;
   int mp;
   float smooth = 0.1;
-  boolean ready=false;
-  byte stage=1;
+  boolean ready = false;
+  byte stage = 1;
 
   // Tasks anhalten, wir machen hier alles selsbt
   stopTasks();
   lcd.clear();
   EMPTY(outstr);
-  //EMPTY(outstr);
-  strcpy(outstr,"Kalibrierung Kanal");
-  LCDout(outstr,0,0,18);
+  strcpy(outstr, "Kalibrierung Kanal");
+  LCDout(outstr, 0, 0, 18);
   //LCDout("Kalibrierung Kanal",0,0,18);
   EMPTY(outstr);
-  itoa(kanal,outstr,10);
-  LCDout(outstr,19,0,1);
+  itoa(kanal, outstr, 10);
+  LCDout(outstr, 19, 0, 1);
   EMPTY(outstr);
-  LCDout("P:",0,1,6);
-  dtostrf(dbM,5,1,outstr);
-  LCDout(outstr,2,1,5);
-  LCDout("dBm",7,1,3);
+  LCDout("P:", 0, 1, 6);
+  dtostrf(dbM, 5, 1, outstr);
+  LCDout(outstr, 2, 1, 5);
+  LCDout("dBm", 7, 1, 3);
   EMPTY(outstr);
-  LCDout("Ref:",0,2,4);
-  dtostrf(ref,6,1,outstr);
-  LCDout(outstr,4,2,6);
+  LCDout("Bitte Signal ...",0,2,19);
+  LCDout("Taste druecken",0,3,19);
+  while(!fired && !turned) { }
+  if (turned) {
+      turned=false;
+      LCDout("                ",0,2,19);
+      LCDout("              ",0,3,19);
+      LCDout("Abbruch...",0,3,17);
+      delay(1000);
+      startTasks();
+      return;
+  }
+  fired=false;
+  LCDout("                ",0,2,19);
+  LCDout("              ",0,3,19);
+  LCDout("Ref:", 0, 2, 4);
+  dtostrf(ref, 6, 1, outstr);
+  LCDout(outstr, 4, 2, 6);
   EMPTY(outstr);
-  LCDout("MW:",11,2,3);
-
-  ///?????
-  //dtostrf(rawU1,6,1,outstr);
-  //LCDout(outstr,14,2,6);
+  LCDout("MW:", 11, 2, 3);
   EMPTY(outstr);
-  LCDout("Scal:",0,3,5);
-  dtostrf(*scalFactor,5,3,outstr);
-  LCDout(outstr,5,3,5);
+  LCDout("Scal:", 0, 3, 5);
+  dtostrf(*scalFactor, 5, 3, outstr);
+  LCDout(outstr, 5, 3, 5);
   //LCDout("0/9",16,1,3);
   // Anfangswert setzen
-  rawU=(float)analogRead(pin)* *scalFactor;
+  rawU = (float)analogRead(pin) * *scalFactor;
   // wir koennen nicht auf die MW  per Task warten, wir müssen die Messungen selbst aufrufen
- //while( int(*scalFactor*10000) != int(oldScal *10000)) {// drei Stellen hinter dem Komma stabil
- while((stage<5) || (count<50)) {  // muss bis Stage 5 laufen und dort 50 Runden drehen
-     oldScal= *scalFactor;
-    mp=(float)analogRead(pin);
+  //while( int(*scalFactor*10000) != int(oldScal *10000)) {// drei Stellen hinter dem Komma stabil
+  while ((stage < 5) || (count < 50)) { // muss bis Stage 5 laufen und dort 50 Runden drehen
+    oldScal = *scalFactor;
+    mp = (float)analogRead(pin);
     rawU = (1.0 - smooth) * rawU + (smooth * mp);
-    *scalFactor=ref/rawU;
+    *scalFactor = ref / rawU;
     EMPTY(outstr);
-    dtostrf(rawU,6,1,outstr);
-    LCDout(outstr,14,2,6);
+    dtostrf(rawU, 6, 1, outstr);
+    LCDout(outstr, 14, 2, 6);
     EMPTY(outstr);
-    LCDout("AK:",11,3,3);
-    itoa(mp,outstr,10);
-    LCDout(outstr,15,3,4);
+    LCDout("AK:", 11, 3, 3);
+    itoa(mp, outstr, 10);
+    LCDout(outstr, 15, 3, 4);
     EMPTY(outstr);
-    dtostrf(*scalFactor,5,3,outstr);
-    LCDout(outstr,5,3,5);
-    
+    dtostrf(*scalFactor, 5, 3, outstr);
+    LCDout(outstr, 5, 3, 5);
+
     // Wir erhöhen die Glaettung nach Genauigkeit
     // 5 Stufen, count empirisch ermittelt
     // smooth startet mit 0.1
     // stage startet bei 1
-    
-     if ((stage==1) && (count==60) &&(int(*scalFactor*10) == int(oldScal *10))) {
-      smooth=0.01;
-      stage=2;
-      count=0;
+
+    if ((stage == 1) && (count == 60) && (int(*scalFactor * 10) == int(oldScal * 10))) {
+      smooth = 0.01;
+      stage = 2;
+      count = 0;
     }
-    else if ((stage==2) && (count==100) && (int(*scalFactor*100) == int(oldScal *100))){
-      smooth=0.001;
-      stage=3;
-      count=0;
+    else if ((stage == 2) && (count == 100) && (int(*scalFactor * 100) == int(oldScal * 100))) {
+      smooth = 0.001;
+      stage = 3;
+      count = 0;
     }
-    else if ( (stage==3) && (count==100) &&(int(*scalFactor*1000) == int(oldScal *1000))) {
-      smooth=0.0001;
-      stage=4;
-      count=0;
+    else if ( (stage == 3) && (count == 100) && (int(*scalFactor * 1000) == int(oldScal * 1000))) {
+      smooth = 0.0001;
+      stage = 4;
+      count = 0;
     }
-    else if ((stage==4) && (count==50) && (int(*scalFactor*1000) == int(oldScal *1000))) {
-      stage=5;
-      LCDout("*",13,2,1);
-      count=0;
+    else if ((stage == 4) && (count == 50) && (int(*scalFactor * 1000) == int(oldScal * 1000))) {
+      stage = 5;
+      LCDout("*", 13, 2, 1);
+      count = 0;
     }
     count++;
     EMPTY(outstr);
-    itoa(count,outstr,10);
+    itoa(count, outstr, 10);
     //LCDout(outstr,12,1,1);
     EMPTY(outstr);
-    itoa(stage,outstr,10);
-    LCDout(outstr,12,1,1);
+    itoa(stage, outstr, 10);
+    LCDout(outstr, 12, 1, 1);
     EMPTY(outstr);
-    dtostrf(smooth,4,4,outstr);
-    LCDout(outstr,14,1,6);
+    dtostrf(smooth, 4, 4, outstr);
+    LCDout(outstr, 14, 1, 6);
     delay(40);
     if (fired) {
-       fired=false;
-       break;
+      fired = false;
+      break;
     }
   }
-  LCDout("Kalibrierung fertig",0,0,20);
+  EEprom.calibrated[kanal-1]=true;
+  LCDout("Kalibrierung fertig ", 0, 0, 20);
+  writeEEPROM();
   delay(3000);
   // Tasks wieder einschalten
   startTasks();
-  
-  
+
+
 }
 
 void take_ads()
@@ -583,26 +818,26 @@ void take_ads()
   float mp2;
 
   // zuerst schnell die Werte lesen, bevor weiter gerechnet wird
-  mp1=(float)analogRead(PIN_A1);
-  mp2=(float)analogRead(PIN_A2);
-  
+  mp1 = (float)analogRead(PIN_A1);
+  mp2 = (float)analogRead(PIN_A2);
+
   // erster Kanal
-  mp=freq_correction(mp1*scalFactor1,frequenz,linM0);
+  mp = freq_correction(mp1 * scalFactor1, frequenz, linM0);
   // falls der MW kleiner als unsere kleinste Spannung ist, glätten wir nicht von 0 an
   if (smoothU1 < linM0[HIGH_LIMIT].ADnorm) // noch kein Wert da, dann nehmen wir mal den echten Messwert
-    smoothU1=mp;
+    smoothU1 = mp;
   //Glättung
   smoothU1 = (1.0 - smooth) * smoothU1 + smooth * mp;
   // zweiter Kanal
-  mp=freq_correction(mp2*scalFactor2,frequenz,linM0);
+  mp = freq_correction(mp2 * scalFactor2, frequenz, linM0);
   if (smoothU2 < linM0[HIGH_LIMIT].ADnorm) // noch kein Wert da, dann nehmen wir mal den echten Messwert
-    smoothU2=mp;
+    smoothU2 = mp;
   smoothU2 = (1.0 - smooth) * smoothU2 + smooth * mp;
- // rawU2 = (1.0 - smooth) * rawU2 + smooth * (float)analogRead(PIN_A2) * scalFactor2;
+  // rawU2 = (1.0 - smooth) * rawU2 + smooth * (float)analogRead(PIN_A2) * scalFactor2;
 }
 
 
-float freq_correction(float rawU,float qrg, struct LinStruct *linM ) {
+float freq_correction(float rawU, float qrg, struct LinStruct *linM ) {
   float corrU;
   float offset;
   // definierte Werte oben im Programm
@@ -637,26 +872,26 @@ float freq_correction(float rawU,float qrg, struct LinStruct *linM ) {
   //linM0[15].dB = -65; linM0[15].ADnorm = 972.1;
   //linM0[16].dB = -70; linM0[16].ADnorm = 981.6;
 
-  
-  offset=(qrg * QRG_FACTOR); //Offset(f)= 0,020469 * Messfrequenz in MHz 
-  corrU=rawU + offset;     // MW = MW + Offset(f); 
+
+  offset = (qrg * QRG_FACTOR); //Offset(f)= 0,020469 * Messfrequenz in MHz
+  corrU = rawU + offset;   // MW = MW + Offset(f);
 
   // corrU ist größer als 736.8 (-40dBm)
-  if (corrU > linM[QRG_HIGH_CORR].ADnorm){
-    corrU = corrU -((corrU - linM[QRG_HIGH_CORR].ADnorm)/QRG_HIGH_FACTOR) * offset; //  MW = MW - ((MW - 736,8) / 244,8) * Offset(f);
+  if (corrU > linM[QRG_HIGH_CORR].ADnorm) {
+    corrU = corrU - ((corrU - linM[QRG_HIGH_CORR].ADnorm) / QRG_HIGH_FACTOR) * offset; //  MW = MW - ((MW - 736,8) / 244,8) * Offset(f);
 
   }
   // corrU ist größer als Wert von 0dBm und kleiner als Wert von -5dBm
   else if ((corrU > linM[HIGH_LIMIT].ADnorm) && (corrU < linM[QRG_LOW_CORR].ADnorm)) {// nur ausführen, wenn wir einen Wert >0dBm haben, aus Limits ermittelt
-    corrU = corrU -((linM[QRG_LOW_CORR].ADnorm-corrU)/QRG_LOW_FACTOR) * offset;  //  W = MW - ((281,5 - MW) / 86,4 ) * Offset(f);
+    corrU = corrU - ((linM[QRG_LOW_CORR].ADnorm - corrU) / QRG_LOW_FACTOR) * offset; //  W = MW - ((281,5 - MW) / 86,4 ) * Offset(f);
 
   }
   // Begrenzung der Werte
   //
-  //if (MW > 981,6) MW = 981,6; 
-  //if (MW < 231,1) MW = 231,1; 
-   if (corrU > linM[LOW_LIMIT].ADnorm)         corrU =  linM[LOW_LIMIT].ADnorm;    //#define LOW_LIMIT 16  entspricht -70dBm
-   else if (corrU <linM[HIGH_LIMIT].ADnorm)    corrU =  linM[HIGH_LIMIT].ADnorm;
+  //if (MW > 981,6) MW = 981,6;
+  //if (MW < 231,1) MW = 231,1;
+  if (corrU > linM[LOW_LIMIT].ADnorm)         corrU =  linM[LOW_LIMIT].ADnorm;    //#define LOW_LIMIT 16  entspricht -70dBm
+  else if (corrU < linM[HIGH_LIMIT].ADnorm)    corrU =  linM[HIGH_LIMIT].ADnorm;
   return corrU;
 }
 
@@ -690,7 +925,7 @@ float linearize(float rawU, struct LinStruct *linM, byte linMsize ) {
   Serial.print("  dB=");
   Serial.println(linM[pU].dB);
 #endif
-  if (pU > (linMsize-1))    U = linM[linMsize].dB;
+  if (pU > (linMsize - 1))    U = linM[linMsize].dB;
   else if (pU < 1)          U = linM[0].dB;
   else                      U = ((rawU - linM[pU].ADnorm) / (linM[pU + 1].ADnorm - linM[pU].ADnorm)) * (linM[pU + 1].dB - linM[pU].dB) + linM0[pU].dB;
 #ifdef DEBUG
@@ -699,24 +934,26 @@ float linearize(float rawU, struct LinStruct *linM, byte linMsize ) {
 #endif
   return U;
 }
-void LCDout (char *outstring,byte x, byte y, byte len) {
+void LCDout (char *outstring, byte x, byte y, byte len) {
 
   byte i;
   char empty[21];
 
-  if (len>20) return;
-  
+  if (len > 20) return;
+
   // Leerstring zusammenbauen
   EMPTY(empty);
+  //for (i=0;i<sizeof(empty);i++)
+  //  empty[i]=" ";
   lcd.setCursor(x, y);
   lcd.print(empty);
   lcd.setCursor(x, y);
-  strncpy(empty,outstring,len);
+  strncpy(empty, outstring, len);
   lcd.print(empty);
   //lcd.print(outstring);
 }
 
-void screen0(float U1,float U2,float P1mW,float P2mW,float VSWR) {
+void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR) {
 
   int lbg_draw_val_limited;
   char outstr[30];
@@ -728,69 +965,69 @@ void screen0(float U1,float U2,float P1mW,float P2mW,float VSWR) {
 
   P1mW_out = P1mW / MBwahl[MB[0]].Divisor;
   P2mW_out = P2mW / MBwahl[MB[1]].Divisor;
-  outstr[0]='\0';
-  dtostrf(U1,4,1,outstr);
-  strcat(outstr,"dBm");
-  LCDout(outstr,0,0,8);
+  outstr[0] = '\0';
+  dtostrf(U1, 4, 1, outstr);
+  strcat(outstr, "dBm");
+  LCDout(outstr, 0, 0, 8);
 
-  outstr[0]='\0';
-  dtostrf(U2,4,1,outstr);
-  strcat(outstr,"dBm");
-  LCDout(outstr,12,0,8);
+  outstr[0] = '\0';
+  dtostrf(U2, 4, 1, outstr);
+  strcat(outstr, "dBm");
+  LCDout(outstr, 12, 0, 8);
 
- 
+
   if (abs(VSWR) > 99.9) VSWR = 99.9;
 
   //outstr=String(VSWR,2);
-  outstr[0]='\0';
-  dtostrf(VSWR,4,2,outstr);
-  LCDout(outstr,8,2,4);
-  outstr[0]='\0';
-  strcpy(outstr,"SWR\0");
-  LCDout(outstr,9,1,3);
+  outstr[0] = '\0';
+  dtostrf(VSWR, 4, 2, outstr);
+  LCDout(outstr, 8, 2, 4);
+  outstr[0] = '\0';
+  strcpy(outstr, "SWR\0");
+  LCDout(outstr, 9, 1, 3);
 
   // Nachkommastellen und Einheit werden aus dem Sturct Array gelesen.
   //[0] Eingang1
   //[1] Eingang2
-  outstr[0]='\0';
+  outstr[0] = '\0';
   EMPTY(outstr);
-  dtostrf(P1mW_out,5,MBwahl[MB[0]].Nachkomma,outstr); 
-  strcat(outstr,MBwahl[MB[0]].Unit);
-  LCDout(outstr,1,1,8);
+  dtostrf(P1mW_out, 5, MBwahl[MB[0]].Nachkomma, outstr);
+  strcat(outstr, MBwahl[MB[0]].Unit);
+  LCDout(outstr, 1, 1, 8);
 
-  outstr[0]='\0';
+  outstr[0] = '\0';
   EMPTY(outstr);
-  dtostrf(P2mW_out,5,MBwahl[MB[1]].Nachkomma,outstr);
-  strcat(outstr,MBwahl[MB[1]].Unit);
-  LCDout(outstr,13,1,7);
+  dtostrf(P2mW_out, 5, MBwahl[MB[1]].Nachkomma, outstr);
+  strcat(outstr, MBwahl[MB[1]].Unit);
+  LCDout(outstr, 13, 1, 7);
 
-  outstr[0]='\0';
+  outstr[0] = '\0';
   EMPTY(outstr);
   //strcpy(outstr,"ATT:");
-  dtostrf(Koppler1,4,1,outstr1);
-  strcat(outstr,outstr1);
-  LCDout(outstr,1,2,7);
+  dtostrf(Koppler1, 4, 1, outstr1);
+  strcat(outstr, outstr1);
+  LCDout(outstr, 1, 2, 7);
 
- 
-  outstr[0]='\0';
+
+  outstr[0] = '\0';
   EMPTY(outstr);
   //strcpy(outstr,"ATT:");
-  dtostrf(Koppler2,4,1,outstr1);
-  strcat(outstr,outstr1);
-  LCDout(outstr,13,2,7);
- 
+  dtostrf(Koppler2, 4, 1, outstr1);
+  strcat(outstr, outstr1);
+  LCDout(outstr, 13, 2, 7);
+
   //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
   //lbg_draw_val_limited = int(1000 * P1mW / (0.0008 * pow(10, MB1 - 1)));
   lbg_draw_val_limited = int(1000 * P1mW / (MBwahl[MB[0]].range));
   if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
   lbgPWR.drawValue(lbg_draw_val_limited, 1000);
-  outstr[0]='\0';
+  outstr[0] = '\0';
   EMPTY(outstr);
-  strcpy(outstr,"[");
-  strcat(outstr,MBwahl[MB[0]].Text);
-  strcat(outstr,"]");
+  strcpy(outstr, "[");
+  strcat(outstr, MBwahl[MB[0]].Text);
+  strcat(outstr, "]");
 
-  LCDout(outstr,13,3,7);
+  LCDout(outstr, 13, 3, 7);
 
 
   lcd.setCursor(10, 0);
@@ -804,84 +1041,84 @@ void screen0(float U1,float U2,float P1mW,float P2mW,float VSWR) {
 
 }
 
-void screen1(byte no,float Ulin,float U,float rawU, float scalFactor) {
+void screen1(byte no, float Ulin, float U, float rawU, float scalFactor) {
   int lbg_draw_val_limited;
   float PmW_out = 0;
-  float PmW=0;
+  float PmW = 0;
   char outstr[30];
   int i;
-  byte mb=4;
-  float Um=0;
+  byte mb = 4;
+  float Um = 0;
   PmW = pow(10, Ulin / 10.0);
-  mb= MBselect(PmW);
+  mb = MBselect(PmW);
   resetCursor();
-  outstr[0]='\0';
+  outstr[0] = '\0';
   EMPTY(outstr);
-  itoa(no+1,outstr,10);
-  strcat(outstr,">");
-  LCDout(outstr,0,0,2);
+  itoa(no + 1, outstr, 10);
+  strcat(outstr, ">");
+  LCDout(outstr, 0, 0, 2);
 
   PmW_out = PmW / MBwahl[mb].Divisor;
-    
+
   EMPTY(outstr);
-  dtostrf(Ulin,4,1,outstr);
-  strcat(outstr,"dBm");
-  LCDout(outstr,2,0,8);
+  dtostrf(Ulin, 4, 1, outstr);
+  strcat(outstr, "dBm");
+  LCDout(outstr, 2, 0, 8);
   EMPTY(outstr);
-  dtostrf(PmW_out,5,MBwahl[mb].Nachkomma,outstr); 
-  strcat(outstr,MBwahl[mb].Unit);
-  LCDout(outstr,11,0,8);
+  dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
+  strcat(outstr, MBwahl[mb].Unit);
+  LCDout(outstr, 11, 0, 8);
 
 
-  Um=rawU /  scalFactor;
+  Um = rawU /  scalFactor;
   EMPTY(outstr);
-  LCDout("Dm:",0,1,10);
-  dtostrf(Um,5,1,outstr);
+  LCDout("Dm:", 0, 1, 10);
+  dtostrf(Um, 5, 1, outstr);
   //strcat(outstr,"Dr:");
-  LCDout(outstr,4,1,10);
+  LCDout(outstr, 4, 1, 10);
 
   EMPTY(outstr);
-  LCDout("Dk:",11,1,10);
-  dtostrf(rawU,5,1,outstr);
+  LCDout("Dk:", 11, 1, 10);
+  dtostrf(rawU, 5, 1, outstr);
   //strcat(outstr,"Dk:");
-  LCDout(outstr,15,1,10);
+  LCDout(outstr, 15, 1, 10);
 
   // Sannung am AD Wandler
   //Um=rawU / 1024 * UREF / scalFactor ;
   //Um=rawU / scalFactor ;
-  
-    EMPTY(outstr);
-    strcpy(outstr,"Faktor:");
-    LCDout(outstr,0,2,7);
-    EMPTY(outstr);
-    dtostrf(scalFactor,5,3,outstr);
-    LCDout(outstr,9,2,5);
-   //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
- 
+
+  EMPTY(outstr);
+  strcpy(outstr, "Faktor:");
+  LCDout(outstr, 0, 2, 7);
+  EMPTY(outstr);
+  dtostrf(scalFactor, 5, 3, outstr);
+  LCDout(outstr, 9, 2, 5);
+  //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
+
   lbg_draw_val_limited = int(1000 * PmW / (MBwahl[mb].range));
   if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
   lbgPWR.drawValue(lbg_draw_val_limited, 1000);
- 
-  EMPTY(outstr);
-  strcpy(outstr,"[");
-  strcat(outstr,MBwahl[mb].Text);
-  strcat(outstr,"]");
 
-  LCDout(outstr,13,3,7);
+  EMPTY(outstr);
+  strcpy(outstr, "[");
+  strcat(outstr, MBwahl[mb].Text);
+  strcat(outstr, "]");
+
+  LCDout(outstr, 13, 3, 7);
 }
 
-void screen2(float U1,float U2,float P1mW,float P2mW,float VSWR) {
- int lbg_draw_val_limited;
- float P1mW_out = 0;
+void screen2(float U1, float U2, float P1mW, float P2mW, float VSWR) {
+  int lbg_draw_val_limited;
+  float P1mW_out = 0;
   float P2mW_out = 0;
   char outstr[30];
   int i;
 
   resetCursor();
-  outstr[0]='\0';
+  outstr[0] = '\0';
   EMPTY(outstr);
-  strcpy(outstr,"Screen2");
-  LCDout(outstr,0,2,7);
+  strcpy(outstr, "Screen2");
+  LCDout(outstr, 0, 2, 7);
 }
 
 void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
@@ -889,53 +1126,54 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   float VSWR = 1.0;
   float P1mW_out = 0;
   float P2mW_out = 0;
-  float U1lin=0;
-  float U2lin=0;
+  float U1lin = 0;
+  float U2lin = 0;
   //String outstr;
   //static float old_U1 = 0.0;
   //String P_unit1, P_unit2;
   //int lbg_draw_val_limited;
-  
+
   resetCursor();
-  
-    // Lienarisierung aufrufen.
+
+  // Lienarisierung aufrufen.
   // Länge der LinM Struct kann nicht in der Funktion bestimmt werden (3.Argument)
   U1lin = linearize(smoothU1, linM0, sizeof(linM0) / sizeof(struct LinStruct));
   U2lin = linearize(smoothU2, linM0, sizeof(linM0) / sizeof(struct LinStruct));
 
-  U1=U1lin+Koppler1;
-  U2=U2lin+Koppler2;
+  U1 = U1lin + Koppler1;
+  U2 = U2lin + Koppler2;
 
   P1mW = pow(10, U1 / 10.0);
   P2mW = pow(10, U2 / 10.0);
 
   //MB[0] enthaelt den gewählten Bereich fuer Eingang1, MB[1] für Eingang2
   // die Wwerte ermitteln wir aus dem Array der Struct. In MBwahl[] findet man dann alles notwendig
-  MB_Wahl(0,P1mW);
-  MB_Wahl(1,P2mW);
-  
+  MB_Wahl(0, P1mW);
+  MB_Wahl(1, P2mW);
+
 
   P1mW_out = P1mW / MBwahl[MB[0]].Divisor;
   P2mW_out = P2mW / MBwahl[MB[1]].Divisor;
   VSWR = abs((pow(10, ((U2 - U1) / 10.0)) + 1) / (pow(10, ((U2 - U1) / 10.0)) - 0.999999));
-// Ausgabe auf der verschiedenen Screens 
-  if (screenNo != oldScreenNo){
-     lcd.clear();
-     oldScreenNo=screenNo;
-     LcdBarGraph lbgPWR(&lcd, 13, 0, 3);
+  // Ausgabe auf der verschiedenen Screens
+  if ((screenNo==99) || (screenNo != oldScreenNo)) {
+    if (screenNo==99) screenNo=oldScreenNo; // 99 refreshed den Bildschirm
+    lcd.clear();
+    oldScreenNo = screenNo;
+    LcdBarGraph lbgPWR(&lcd, 13, 0, 3);
   }
   else { // es wurde nicht gedreht
   }
-  if (screenNo==0)
-    screen0(U1,U2,P1mW,P2mW,VSWR);
-  else if (screenNo==1)
-    screen1(0,U1lin,U1,smoothU1,scalFactor1);
-  else if (screenNo==2)
-    screen1(1,U2lin,U2,smoothU2,scalFactor2);
+  if (screenNo == 0)
+    screen0(U1, U2, P1mW, P2mW, VSWR);
+  else if (screenNo == 1)
+    screen1(0, U1lin, U1, smoothU1, scalFactor1);
+  else if (screenNo == 2)
+    screen1(1, U2lin, U2, smoothU2, scalFactor2);
 
   resetCursor();
 
- 
+
 }
 
 byte MBselect(float PmW) {
@@ -945,19 +1183,19 @@ byte MBselect(float PmW) {
   float  minP;
   float maxP;
   // Bereich passt nicht und Wartezeit vorbei, wir suchen den passenden Bereich
-  for(i=0;i<(sizeof(MBwahl)/sizeof(MBStruct));i++) {
-    minP=MBwahl[i].range *0.05;
-    maxP=MBwahl[i].range *0.8;
-    if ((PmW<maxP) && (PmW>minP)) {
+  for (i = 0; i < (sizeof(MBwahl) / sizeof(MBStruct)); i++) {
+    minP = MBwahl[i].range * 0.05;
+    maxP = MBwahl[i].range * 0.8;
+    if ((PmW < maxP) && (PmW > minP)) {
       // Wir haben den richtigen MB gefunden
-       return i;         
+      return i;
     }
   }
-  return 0; 
+  return 0;
 }
 
 
-byte MB_Wahl(byte kanal,float PmW) {
+byte MB_Wahl(byte kanal, float PmW) {
   // Messbereichsumschaltung anhand MBStruct
   // Arbeitet mit globalenb Variablen MB[] und MBtime[]
   unsigned long switch_MB = millis();
@@ -965,36 +1203,36 @@ byte MB_Wahl(byte kanal,float PmW) {
   byte MBakt;
   float  minP;
   float maxP;
-  MBakt=MB[kanal];
+  MBakt = MB[kanal];
   // Grenzen des Bereichs min 0.05 * range, max 08*range
-  minP=MBwahl[MBakt].range *0.05;
-  maxP=MBwahl[MBakt].range *0.8;
+  minP = MBwahl[MBakt].range * 0.05;
+  maxP = MBwahl[MBakt].range * 0.8;
   // wir schauen uns den gewählen Bereich mal an, ob er passt
   //if ((PmW<MBwahl[MBakt].maxP) && (PmW>MBwahl[MBakt].minP)) {
-    if ((PmW<maxP) && (PmW>minP)) {
-      // dann müssen wir nichts tun
-      return MB[kanal];
+  if ((PmW < maxP) && (PmW > minP)) {
+    // dann müssen wir nichts tun
+    return MB[kanal];
   }
   // Bereich passt nicht, wie lange sind wir denn schon hier?
-  if ((switch_MB - MBtime[kanal])< (MBwahl[MBakt].tLen *1000UL)) { // wir sind noch nicht lange genug in den Bereich
+  if ((switch_MB - MBtime[kanal]) < (MBwahl[MBakt].tLen * 1000UL)) { // wir sind noch nicht lange genug in den Bereich
     //Serial.println("Warte...");
     return MB[kanal];
   }
   // Bereich passt nicht und Wartezeit vorbei, wir suchen den passenden Bereich
-  for(i=0;i<(sizeof(MBwahl)/sizeof(MBStruct));i++) {
-    minP=MBwahl[i].range *0.05;
-    maxP=MBwahl[i].range *0.8;
-    if ((PmW<maxP) && (PmW>minP)) {
-  //  if ((PmW < MBwahl[i].maxP) && (PmW > MBwahl[i].minP)) {
+  for (i = 0; i < (sizeof(MBwahl) / sizeof(MBStruct)); i++) {
+    minP = MBwahl[i].range * 0.05;
+    maxP = MBwahl[i].range * 0.8;
+    if ((PmW < maxP) && (PmW > minP)) {
+      //  if ((PmW < MBwahl[i].maxP) && (PmW > MBwahl[i].minP)) {
       // Wir haben den richtigen MB gefunden
-       MBtime[kanal]=switch_MB; // Zeit merken
-       MB[kanal]=i; // Bereich merken
-       //Serial.print("Switch...");
-       //Serial.println(MBwahl[i].range);
-       return MB[kanal];         
+      MBtime[kanal] = switch_MB; // Zeit merken
+      MB[kanal] = i; // Bereich merken
+      //Serial.print("Switch...");
+      //Serial.println(MBwahl[i].range);
+      return MB[kanal];
     }
   }
-  return 0; 
+  return 0;
 }
 
 
