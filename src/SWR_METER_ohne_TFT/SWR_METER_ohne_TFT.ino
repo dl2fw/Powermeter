@@ -115,6 +115,20 @@ float scalFactor2 = 1.0 ;
 // 2 --> 3 Darsatellungen 0,1,2
 #define MAXSCREEN 2
 
+// Anzahl der Elemente im QRGarray[]
+#define QRGSIZE 17
+
+// Anzahl der zu verwaltenden Kopppler, durch EEPROM Größe beschränkt
+#define KOPPLERSIZE 4
+
+
+// Status für check_encoder, wo wir gerade stehen
+enum mStates {
+  SWR,
+  IN1,
+  IN2,
+  MENU,
+};
 
 
 
@@ -135,8 +149,8 @@ float scalFactor2 = 1.0 ;
 //0.7877 ;
 //float scalFactor2 = 1.39 ;
 
-float frequenz =0; // Frequenz in MHz, wird aus QRGarray bestimmt
-byte frequenzIdx=QRG; // Index in QRGArry
+float frequenz = 0; // Frequenz in MHz, wird aus QRGarray bestimmt
+byte frequenzIdx = QRG; // Index in QRGArry
 
 
 const float smooth = 0.004;
@@ -175,9 +189,21 @@ struct QRGstruct {
   char Text[10];      // Anzeigetext
 };
 
+struct KOPPELstruct {
+  byte  qrgIdx[QRGSIZE];      // Index de Frequenz, bezieht sich auf QRGstruct/QRGarray
+  float sigDB[QRGSIZE];       // Auskoppeldaempfung
+  byte minQRGidx;             // tiefste nutzbare Frequenz (Index, siehe oben)
+  byte maxQRGidx;             // größte Nutzbare Frequenz
+  char name[20];              // Namen des Kopplers
+};
+
 struct MBStruct MBwahl[10];
 struct EEStruct EEprom;
-struct QRGstruct QRGarray[17];
+struct QRGstruct QRGarray[QRGSIZE];
+struct KOPPELstruct KOPPELarray[KOPPLERSIZE];
+
+mStates menuState = SWR;
+mStates oldState=IN1;
 
 int posi = 0;
 
@@ -222,6 +248,8 @@ int delta_value = 0;
 boolean items_changed = false;
 //############################################################
 
+boolean refresh=false; // soll Bildschirm neu aufgebaut werden?
+
 
 CRC8 crc;
 
@@ -255,127 +283,78 @@ void isr ()
 }  // end of isr
 
 void check_encoder() {
-  byte idx;
-  if (fired) { // es wurde die Taste gedrueckt
-    fired = false;
-    if (screenNo == 0 ) { // Kruecke, um den Eingang auszuwaehlen, wandert später in die State Machine
-      frequenzIdx=chooseQRG(frequenzIdx);
-      frequenz=QRGarray[frequenzIdx].frequency;
-      Serial.print("Frequenz:");
-      Serial.print(frequenz);
-      Serial.print("  Index:");
-      Serial.println(frequenzIdx);
-      writeEEPROM();
-      screenNo = 99;
-    }
-    if (screenNo == 1) { // Kruecke, um den Eingang auszuwaehlen, wandert später in die State Machine
-      calibration(screenNo, &scalFactor1, PIN_A1);
-      screenNo = 0;
-    }
-    else if (screenNo == 2) {
-      calibration(screenNo, &scalFactor2, PIN_A2);
-      screenNo = 0;
-    }
+  // wenn keine Taste gedrueckt wurde und nicht gedreht wurde, haben wir nichts zu tun
+  if (!fired && !turned)
+    return;
+
+  switch (menuState) { // wir schauen, in welchem Status wir uns befiunden. Hier nutzen wir ein enum der besseren Lesbarkeit.
+    case SWR:  // Hauptschirm
+      //
+      if (fired) { // Taste wurde gedrueckt
+        fired = false;
+        frequenzIdx = chooseQRG(frequenzIdx);
+        frequenz = QRGarray[frequenzIdx].frequency;
+        Serial.print("Frequenz:");
+        Serial.print(frequenz);
+        Serial.print("  Index:");
+        Serial.println(frequenzIdx);
+        writeEEPROM();
+        refresh=true;
+      }
+      if (turned && up) {
+        turned=false;
+        menuState = IN1;
+        screenNo = 1;
+      }
+      if (turned && !up) {
+        turned=false;
+        menuState = IN2;
+        screenNo = 2;
+      }
+      break;
+    case IN1:   // Eingang1 Anzeige
+      if (turned && up) {
+        turned=false;
+        menuState = IN2;
+        screenNo = 2;
+      }
+      if (turned && !up) {
+        turned=false;
+        menuState = SWR;
+        screenNo = 0;
+      }
+      if (fired) {
+        fired = false;
+        calibration(1, &scalFactor1, PIN_A1);
+        refresh=true;
+      }
+      break;
+    case   IN2:   // Eingang2 Anzeige
+      if (turned && up) {
+        turned=false;
+        menuState = SWR;
+        screenNo = 0;
+      }
+      if (turned && !up) {
+        turned=false;
+        menuState = IN1;
+        screenNo = 1;
+      }
+      if (fired) {
+        fired = false;
+        calibration(2, &scalFactor2, PIN_A2);
+        refresh=true;
+      }
+      break;
+    case MENU:    // wir sind im Menu
+      //
+      break;
   }
-  fired = false;
-  if (turned)
-  {
-    //    if (!edit && !change_value) { // wir sind nicht im Editiermodus
-    /*   if (up) {
-         if (Menu_page < 3) Menu_page++;  //dann schalten wir die Menüseite um - wenn wir später mehrere haben - Anzahl noch hardkodiert
-       }
-       else if (Menu_page > 1) Menu_page--;
-    */
-    // wir sind im Anzeigemodus, wir waehlen das Anzeigeformat
-    if (up)
-      screenNo < MAXSCREEN ? screenNo++ : (screenNo = 0);
-    else
-      screenNo > 0 ? screenNo-- : (screenNo = MAXSCREEN);
-    //Serial.print("Screen:");
-    //Serial.println(screenNo);
-    //   }
-    /*    if (edit && !change_value) { // wir sind im Editiermodus uns wählen das zu ändernde Item aus - Anzahl noch hardkodiert
-
-          if (up) {
-            if (item_pos < 3) item_pos++;
-          }
-          else if (item_pos > 1) item_pos--;
-
-          resetCursor();
-        }
-        if (edit && change_value) { // wir sind im Editiermodus und haben zusätzlich ein Item zum Ändern ausgewählt
-
-          if (up) delta_value++;
-          else delta_value--;
-
-        }
-    */
-    turned = false;
-  }
-
-  /*
-    if (fired && change_value) {
-      change_value = false;
-      fired = false;
-
-    }
-
-    if(fired && edit && !change_value) { // rechts unten : EXIT
-      if (item_pos == 4) {  // exit !
-        edit = false;
-        change_value = false;
-        fired = false;
-        lcd.noBlink();
-        lcd.noCursor();
-        items_changed = false;
-        }
-
-       if (fired && (item_pos == 3) && items_changed){  // links unten : SAVE
-
-         automatik=temp_automatik;// lokale Änderungen speichern!
-         Man_state = temp_Man_state;
-         items_changed = false;
-         fired = false;
-        }
-
-
-      if (fired && !change_value && (item_pos == 1)) { // Koppler 1  soll geändert werden
-        change_value = true;
-        fired = false;
-        items_changed = true;
-      }
-      if (fired && !change_value && (item_pos == 3)) { // Koppler 2 soll geändert werden
-        change_value = true;
-        fired = false;
-        items_changed = true;
-      }
-      if (fired && !change_value && (item_pos == 2)) { // Messfrequenz soll geändert werden
-        change_value = true;
-        fired = false;
-        items_changed = true;
-      }
-    }
-
-    if (change_value) {
-
-      if (item_pos == 1) {  // Koppler 1 soll geändert werden
-
-        Koppler1 = Koppler1 + delta_value * 0.1;
-        if (Koppler1 < 0.0)  Koppler1 = 0.0;
-        delta_value = 0;
-
-      }
-      if (item_pos == 3) {  // Koppler 2 soll geändert werden
-
-        Koppler2 = Koppler2 + delta_value * 0.1;
-        if (Koppler1 < 0.0)  Koppler1 = 0.0;
-        delta_value = 0;
-      }
-
-    }
-  */
-
+  turned=0;
+  fired=0;
+  return;
 }
+
 
 // Initialisiere LCD Display
 LiquidCrystal lcd(LCD_RS, LCD_EN, LCD_D4, LCD_D5, LCD_D6, LCD_D7); // -- creating LCD instance
@@ -384,7 +363,7 @@ LcdBarGraph lbgPWR(&lcd, 13, 0, 3); //
 
 
 void setup() {
-  boolean waitFired=false; // warte auf Tastendruck
+  boolean waitFired = false; // warte auf Tastendruck
   Serial.begin(115200);
   // -- initializing the LCD
   Serial.println("Start PowerMeter");
@@ -418,7 +397,7 @@ void setup() {
   lcd.print(START2);
   lcd.setCursor(0, 2);
   lcd.print(START3);
-  
+
 
   linM0[0].dB = 10; linM0[0].ADnorm = 195.2;
   linM0[1].dB = 5; linM0[1].ADnorm = 208.6;
@@ -456,26 +435,26 @@ void setup() {
   MBwahl[8].range = 1E5;    MBwahl[8].tLen = 1; MBwahl[8].Nachkomma = 2;  MBwahl[8].Divisor = 1E3;   strcpy(MBwahl[8].Unit, "W\0");  strcpy(MBwahl[8].Text, "100W\0");
 
   // Frequnzen
-  QRGarray[0].frequency=1.800;      strcpy(QRGarray[0].Text,"160m\0");
-  QRGarray[1].frequency=3.500;      strcpy(QRGarray[1].Text,"80m\0");
-  QRGarray[2].frequency=7.000;      strcpy(QRGarray[2].Text,"40m\0");
-  QRGarray[3].frequency=10.000;     strcpy(QRGarray[3].Text,"30m\0");
-  QRGarray[4].frequency=14.000;     strcpy(QRGarray[4].Text,"20m\0");
-  QRGarray[5].frequency=18.000;     strcpy(QRGarray[5].Text,"17m\0");
-  QRGarray[6].frequency=21.000;     strcpy(QRGarray[6].Text,"15m\0");
-  QRGarray[7].frequency=24.000;     strcpy(QRGarray[7].Text,"12m\0");
-  QRGarray[8].frequency=28.000;     strcpy(QRGarray[8].Text,"10m\0");
-  QRGarray[9].frequency=50.000;     strcpy(QRGarray[9].Text,"6m\0");
-  QRGarray[10].frequency=72.000;    strcpy(QRGarray[10].Text,"4m\0");
-  QRGarray[11].frequency=144.000;   strcpy(QRGarray[11].Text,"2m\0");
-  QRGarray[12].frequency=433.000;   strcpy(QRGarray[12].Text,"70cm\0");
-  QRGarray[13].frequency=1200.000;  strcpy(QRGarray[13].Text,"23cm\0");
-  QRGarray[14].frequency=2400.000;  strcpy(QRGarray[14].Text,"13cm\0");
-  QRGarray[15].frequency=5000.000;  strcpy(QRGarray[15].Text,"6cm\0");
-  QRGarray[16].frequency=10000.000; strcpy(QRGarray[16].Text,"3cm\0");
+  QRGarray[0].frequency = 1.800;      strcpy(QRGarray[0].Text, "160m\0");
+  QRGarray[1].frequency = 3.500;      strcpy(QRGarray[1].Text, "80m\0");
+  QRGarray[2].frequency = 7.000;      strcpy(QRGarray[2].Text, "40m\0");
+  QRGarray[3].frequency = 10.000;     strcpy(QRGarray[3].Text, "30m\0");
+  QRGarray[4].frequency = 14.000;     strcpy(QRGarray[4].Text, "20m\0");
+  QRGarray[5].frequency = 18.000;     strcpy(QRGarray[5].Text, "17m\0");
+  QRGarray[6].frequency = 21.000;     strcpy(QRGarray[6].Text, "15m\0");
+  QRGarray[7].frequency = 24.000;     strcpy(QRGarray[7].Text, "12m\0");
+  QRGarray[8].frequency = 28.000;     strcpy(QRGarray[8].Text, "10m\0");
+  QRGarray[9].frequency = 50.000;     strcpy(QRGarray[9].Text, "6m\0");
+  QRGarray[10].frequency = 72.000;    strcpy(QRGarray[10].Text, "4m\0");
+  QRGarray[11].frequency = 144.000;   strcpy(QRGarray[11].Text, "2m\0");
+  QRGarray[12].frequency = 433.000;   strcpy(QRGarray[12].Text, "70cm\0");
+  QRGarray[13].frequency = 1200.000;  strcpy(QRGarray[13].Text, "23cm\0");
+  QRGarray[14].frequency = 2400.000;  strcpy(QRGarray[14].Text, "13cm\0");
+  QRGarray[15].frequency = 5000.000;  strcpy(QRGarray[15].Text, "6cm\0");
+  QRGarray[16].frequency = 10000.000; strcpy(QRGarray[16].Text, "3cm\0");
 
-  frequenz=QRGarray[QRG].frequency;
-  
+  frequenz = QRGarray[QRG].frequency;
+
 
   // Hier das eigentliche "Multitasking"
   // alle 1000ms Ausgabe der Rohsignal an den PC
@@ -485,47 +464,50 @@ void setup() {
 
   startTasks();
 
+  // einladen der im EEProm gspeicherten Werte
+  // anhand der Checksumme schauen wir, ob die Daten konsitent sind.
+
   if (!readEEPROM()) {
     lcd.setCursor(0, 3);
     lcd.print("EEPROM leer, init..");
-    EEprom.calibrated[0]=false;
-    EEprom.calibrated[1]=false; 
+    EEprom.calibrated[0] = false;
+    EEprom.calibrated[1] = false;
     writeEEPROM();
-   
+
     if (!readEEPROM()) {
       lcd.setCursor(0, 3);
       lcd.print("EEPROM ERROR!!!   ");
-      while(1);
+      while (1);
     }
   }
   else {
     lcd.setCursor(0, 3);
     lcd.print("Lese EEPROM...");
   }
-   delay(2000);
-   lcd.clear();
-   // Sind die Kanaele kalibiert?
-   
-   if (!EEprom.calibrated[0]) {
-      lcd.setCursor(0, 0);
-      Serial.println("Kanal 1 unkalbibiert");
-      lcd.print("Kanal 1 unkalbibiert");
-      waitFired=true;
-   }
-    if (!EEprom.calibrated[1]) {
-      lcd.setCursor(0, 1);
-      lcd.print("Kanal 2 unkalbibiert");
-      Serial.println("Kanal 2 unkalbibiert");
-      waitFired=true;
-   }
-   if (waitFired) {
-      lcd.setCursor(0, 3);
-      lcd.print("Taste druecken");
-      while(!fired) {};
-      fired=false;
-   }
-   lcd.clear();
-   
+  delay(1000);
+  lcd.clear();
+  // Sind die Kanaele kalibiert?
+
+  if (!EEprom.calibrated[0]) {
+    lcd.setCursor(0, 0);
+    Serial.println("Kanal 1 unkalbibiert");
+    lcd.print("Kanal 1 unkalbibiert");
+    waitFired = true;
+  }
+  if (!EEprom.calibrated[1]) {
+    lcd.setCursor(0, 1);
+    lcd.print("Kanal 2 unkalbibiert");
+    Serial.println("Kanal 2 unkalbibiert");
+    waitFired = true;
+  }
+  if (waitFired) {
+    lcd.setCursor(0, 3);
+    lcd.print("Taste druecken");
+    while (!fired) {};
+    fired = false;
+  }
+  lcd.clear();
+
 }
 
 void loop()
@@ -536,7 +518,7 @@ void loop()
 }
 
 boolean readEEPROM() {
-  byte checkCRC=0;
+  byte checkCRC = 0;
 
   /*
     struct EEStruct {
@@ -556,10 +538,10 @@ boolean readEEPROM() {
   int eeAddress = 0;
   EEPROM.get(eeAddress, EEprom);
   crc.reset();
-  checkCRC=EEprom.CRC;
+  checkCRC = EEprom.CRC;
   Serial.print("  CRC read:");
   Serial.print(EEprom.CRC);
-  EEprom.CRC=0; // sonst stimmt die CRC Summe nicht, sie darf nicht  mit eingerechnet werden
+  EEprom.CRC = 0; // sonst stimmt die CRC Summe nicht, sie darf nicht  mit eingerechnet werden
   crc.add((uint8_t *)&EEprom, sizeof(EEprom));
   Serial.print("  CRC calc:");
   Serial.println(crc.getCRC());
@@ -577,7 +559,7 @@ boolean readEEPROM() {
     Koppler1 = EEprom.attKoppler[0];
     Koppler2 = EEprom.attKoppler[1];
     frequenzIdx = EEprom.SWRqrg;
-    frequenz=QRGarray[frequenzIdx].frequency;
+    frequenz = QRGarray[frequenzIdx].frequency;
     //Serial.print("QRG idx:");
     //Serial.println(frequenzIdx);
 
@@ -598,9 +580,9 @@ void writeEEPROM() {
   EEprom.attKoppler[0] = Koppler1;
   EEprom.attKoppler[1] = Koppler2;
   EEprom.SWRqrg = frequenzIdx;
-  EEprom.qrg[0]=frequenzIdx;
-  EEprom.qrg[1]=frequenzIdx;
-  EEprom.CRC=0;
+  EEprom.qrg[0] = frequenzIdx;
+  EEprom.qrg[1] = frequenzIdx;
+  EEprom.CRC = 0;
 
   crc.reset();
   crc.add((uint8_t *)&EEprom, sizeof(EEprom));
@@ -629,30 +611,30 @@ void stopTasks() {
 }
 
 byte chooseQRG(byte idx) {
-// Frequenzauswahl mit Encoder, Werte aus dem Array QRGarray
-  byte qrgIdx=0;
-  float freq=QRGarray[idx].frequency;
-  char  *text=QRGarray[idx].Text;
+  // Frequenzauswahl mit Encoder, Werte aus dem Array QRGarray
+  byte qrgIdx = 0;
+  float freq = QRGarray[idx].frequency;
+  char  *text = QRGarray[idx].Text;
   byte i;
   char outstr[21];
   char outstr1[21];
-  byte maxIdx=sizeof(QRGarray) / sizeof(struct QRGstruct) -1 ; // groesster Index bei den Frequenzen
+  byte maxIdx = sizeof(QRGarray) / sizeof(struct QRGstruct) - 1 ; // groesster Index bei den Frequenzen
   stopTasks();
   lcd.clear();
   EMPTY(outstr);
   strcpy(outstr, "Frequenzbereich");
   LCDout(outstr, 0, 0, 18);
   EMPTY(outstr);
-  while(!fired) { //Solange keine Taste gerueckt ist, bleiben wir hier
+  while (!fired) { //Solange keine Taste gerueckt ist, bleiben wir hier
     if (turned) {
-       turned=false;
+      turned = false;
       if (up)
-       idx < maxIdx ? idx++ : (idx=0);
+        idx < maxIdx ? idx++ : (idx = 0);
       else
         idx > 0 ? idx-- : (idx = maxIdx);
     }
-    freq=QRGarray[idx].frequency;
-    text=QRGarray[idx].Text;
+    freq = QRGarray[idx].frequency;
+    text = QRGarray[idx].Text;
     EMPTY(outstr);
     strcpy(outstr, "Band:");
     LCDout(outstr, 0, 1, 5);
@@ -661,7 +643,7 @@ byte chooseQRG(byte idx) {
     LCDout("          ", 6, 1, 10);
     LCDout(outstr, 6, 1, 10);
     EMPTY(outstr);
-    strcpy(outstr,"Freq:");
+    strcpy(outstr, "Freq:");
     LCDout(outstr, 0, 2, 5);
     EMPTY(outstr);
     dtostrf(freq, 5, 1, outstr);
@@ -669,21 +651,21 @@ byte chooseQRG(byte idx) {
     LCDout(outstr, 6, 2, 5);
     LCDout("MHz", 12, 2, 5);
     EMPTY(outstr);
-    strcpy(outstr,"Idx:");
+    strcpy(outstr, "Idx:");
     LCDout(outstr, 0, 3, 5);
     EMPTY(outstr);
-    itoa(idx,outstr,10);
+    itoa(idx, outstr, 10);
     LCDout("     ", 6, 3, 5);
     LCDout(outstr, 6 , 3, 5);
-   
-    while(!turned && !fired) {};  // wir warten auf Tastendruck oder Encoder
-   
-  }  
-   // Tasks wieder einschalten
+
+    while (!turned && !fired) {}; // wir warten auf Tastendruck oder Encoder
+
+  }
+  // Tasks wieder einschalten
   startTasks();
-  return idx;  
-  fired=false;
-  turned=false; 
+  return idx;
+  fired = false;
+  turned = false;
 }
 
 void calibration(byte kanal, float *scalFactor, byte pin) {
@@ -715,21 +697,21 @@ void calibration(byte kanal, float *scalFactor, byte pin) {
   LCDout(outstr, 2, 1, 5);
   LCDout("dBm", 7, 1, 3);
   EMPTY(outstr);
-  LCDout("Bitte Signal ...",0,2,19);
-  LCDout("Taste druecken",0,3,19);
-  while(!fired && !turned) { }
+  LCDout("Bitte Signal ...", 0, 2, 19);
+  LCDout("Taste druecken", 0, 3, 19);
+  while (!fired && !turned) { }
   if (turned) {
-      turned=false;
-      LCDout("                ",0,2,19);
-      LCDout("              ",0,3,19);
-      LCDout("Abbruch...",0,3,17);
-      delay(1000);
-      startTasks();
-      return;
+    turned = false;
+    LCDout("                ", 0, 2, 19);
+    LCDout("              ", 0, 3, 19);
+    LCDout("Abbruch...", 0, 3, 17);
+    delay(1000);
+    startTasks();
+    return;
   }
-  fired=false;
-  LCDout("                ",0,2,19);
-  LCDout("              ",0,3,19);
+  fired = false;
+  LCDout("                ", 0, 2, 19);
+  LCDout("              ", 0, 3, 19);
   LCDout("Ref:", 0, 2, 4);
   dtostrf(ref, 6, 1, outstr);
   LCDout(outstr, 4, 2, 6);
@@ -801,7 +783,7 @@ void calibration(byte kanal, float *scalFactor, byte pin) {
       break;
     }
   }
-  EEprom.calibrated[kanal-1]=true;
+  EEprom.calibrated[kanal - 1] = true;
   LCDout("Kalibrierung fertig ", 0, 0, 20);
   writeEEPROM();
   delay(3000);
@@ -1041,7 +1023,7 @@ void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR) {
 
 }
 
-void screen1(byte no, float Ulin, float U, float rawU, float scalFactor) {
+void screen1(byte kanal, float Ulin, float U, float rawU, float scalFactor,char *QRGtext) {
   int lbg_draw_val_limited;
   float PmW_out = 0;
   float PmW = 0;
@@ -1054,7 +1036,7 @@ void screen1(byte no, float Ulin, float U, float rawU, float scalFactor) {
   resetCursor();
   outstr[0] = '\0';
   EMPTY(outstr);
-  itoa(no + 1, outstr, 10);
+  itoa(kanal, outstr, 10);
   strcat(outstr, ">");
   LCDout(outstr, 0, 0, 2);
 
@@ -1083,17 +1065,17 @@ void screen1(byte no, float Ulin, float U, float rawU, float scalFactor) {
   //strcat(outstr,"Dk:");
   LCDout(outstr, 15, 1, 10);
 
-  // Sannung am AD Wandler
-  //Um=rawU / 1024 * UREF / scalFactor ;
-  //Um=rawU / scalFactor ;
-
   EMPTY(outstr);
-  strcpy(outstr, "Faktor:");
-  LCDout(outstr, 0, 2, 7);
+  strcpy(outstr, "Scal:");
+  LCDout(outstr, 0, 2, 5);
   EMPTY(outstr);
   dtostrf(scalFactor, 5, 3, outstr);
-  LCDout(outstr, 9, 2, 5);
+  LCDout(outstr, 6, 2, 5);
   //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
+
+   EMPTY(outstr);
+   strcat(outstr,QRGtext);
+   LCDout(outstr, 14, 2, 6);
 
   lbg_draw_val_limited = int(1000 * PmW / (MBwahl[mb].range));
   if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
@@ -1128,6 +1110,7 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   float P2mW_out = 0;
   float U1lin = 0;
   float U2lin = 0;
+  
   //String outstr;
   //static float old_U1 = 0.0;
   //String P_unit1, P_unit2;
@@ -1156,21 +1139,26 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   P2mW_out = P2mW / MBwahl[MB[1]].Divisor;
   VSWR = abs((pow(10, ((U2 - U1) / 10.0)) + 1) / (pow(10, ((U2 - U1) / 10.0)) - 0.999999));
   // Ausgabe auf der verschiedenen Screens
-  if ((screenNo==99) || (screenNo != oldScreenNo)) {
-    if (screenNo==99) screenNo=oldScreenNo; // 99 refreshed den Bildschirm
+  if (refresh || (menuState != oldState)) {
     lcd.clear();
-    oldScreenNo = screenNo;
+    oldState = menuState;
     LcdBarGraph lbgPWR(&lcd, 13, 0, 3);
+    refresh=false;
   }
   else { // es wurde nicht gedreht
   }
-  if (screenNo == 0)
-    screen0(U1, U2, P1mW, P2mW, VSWR);
-  else if (screenNo == 1)
-    screen1(0, U1lin, U1, smoothU1, scalFactor1);
-  else if (screenNo == 2)
-    screen1(1, U2lin, U2, smoothU2, scalFactor2);
-
+  switch(menuState) {
+    case SWR:
+      screen0(U1, U2, P1mW, P2mW, VSWR);
+      break;
+    case IN1:
+       screen1(1, U1lin, U1, smoothU1, scalFactor1,QRGarray[EEprom.qrg[0]].Text);
+       break;
+    case IN2:
+      screen1(2, U2lin, U2, smoothU2, scalFactor2,QRGarray[EEprom.qrg[1]].Text);
+      break;
+  }
+  refresh=false;
   resetCursor();
 
 
@@ -1248,10 +1236,10 @@ void write_raw_seriell() {
   Serial.print("U1:");
   Serial.print((int)smoothU1);
   Serial.print("(");
-  //Serial.print(rawU1 / 1024 * UREF / scalFactor1 / UFACTOR);
-  Serial.print("V)  U2:");
+  Serial.print("Dig)  U2:");
   Serial.print((int)smoothU2);
   Serial.print("(");
-  //Serial.print(rawU2 / 1024 * UREF / scalFactor2 / UFACTOR);
-  Serial.println("V)");
+  
+  Serial.print("Dig)  QRG:");
+  Serial.println(frequenz);
 }
