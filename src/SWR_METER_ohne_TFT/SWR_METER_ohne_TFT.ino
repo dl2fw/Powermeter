@@ -342,7 +342,7 @@ void check_encoder() {
       if (fired) {
         fired = false;
         stopTasks();
-        calibration(1, &scalFactor1, PIN_A1);
+        calibration(1, &scalFactor1, PIN_A1,AttKanal1);
         startTasks();
         writeEEPROM();
         refresh = true;
@@ -362,7 +362,7 @@ void check_encoder() {
       if (fired) {
         fired = false;
         stopTasks();
-        calibration(2, &scalFactor2, PIN_A2);
+        calibration(2, &scalFactor2, PIN_A2,AttKanal2);
         startTasks();
         writeEEPROM();
         refresh = true;
@@ -392,6 +392,7 @@ void check_encoder() {
             Koppler1 = EEprom.attKoppler[0];
             writeEEPROM();
             menuState = SWR;
+            refresh = true;
             break;
           case 2: // Konfiguration Kanal 2
             configureInput(2);
@@ -399,6 +400,7 @@ void check_encoder() {
             Koppler1 = EEprom.attKoppler[1];
             writeEEPROM();
             menuState = SWR;
+            refresh = true;
             break;
           case 3: // Konfiguration Koppler
             configureKoppler();
@@ -727,7 +729,7 @@ byte chooseQRG(byte idx) {
   turned = false;
 }
 
-void calibration(byte kanal, float * scalFactor, byte pin) {
+void calibration(byte kanal, float * scalFactor, byte pin,float Att) {
   // Kalibrierung des Kanals bei limM0[CALIBRATE]
   float dbM = linM0[CALIBRATE].dB;
   float ref = linM0[CALIBRATE].ADnorm;
@@ -739,6 +741,7 @@ void calibration(byte kanal, float * scalFactor, byte pin) {
   float smooth = 0.1;
   boolean ready = false;
   byte stage = 1;
+  
 
   // Tasks anhalten, wir machen hier alles selsbt
   //stopTasks();
@@ -752,9 +755,15 @@ void calibration(byte kanal, float * scalFactor, byte pin) {
   LCDout(outstr, 19, 0, 1);
   EMPTY(outstr);
   LCDout("P:", 0, 1, 6);
-  dtostrf(dbM, 5, 1, outstr);
+  dtostrf(dbM+Att, 5, 1, outstr);
   LCDout(outstr, 2, 1, 5);
   LCDout("dBm", 7, 1, 3);
+  if (Att > 0) {
+    LCDout("Att:",11, 1,3);
+    EMPTY(outstr);
+    dtostrf(Att, 4, 1, outstr);
+    LCDout(outstr, 15, 1, 4);
+  }
   EMPTY(outstr);
   LCDout("Bitte Signal ...", 0, 2, 19);
   LCDout("Taste druecken", 0, 3, 19);
@@ -784,6 +793,7 @@ void calibration(byte kanal, float * scalFactor, byte pin) {
   }
 
   fired = false;
+  LCDout("      ", 13, 1, 7);
   LCDout("                ", 0, 2, 19);
   LCDout("              ", 0, 3, 19);
   LCDout("Ref:", 0, 2, 4);
@@ -874,12 +884,13 @@ float editFloat(float inValue, byte x, byte y,byte len,byte frac,float fStep) {
   dtostrf(inValue, len, frac, outstr);
   LCDout(outstr, x, y, len);
   lcd.setCursor(x,y);
+  lcd.blink();;
   while (!fired) {
     if (turned && up) {
       inValue+=fStep;
     }
     else if (turned && !up) {
-      if((inValue-fStep) >0.0)
+      //if((inValue-fStep) >= -0.0)
         inValue-=fStep;
     }
     if (turned) {
@@ -889,8 +900,12 @@ float editFloat(float inValue, byte x, byte y,byte len,byte frac,float fStep) {
       LCDout(outstr, x, y, len);
       turned=false;
     }    
+    delay(20);
   }
   fired=false;
+  turned=false;
+  lcd.noBlink();
+  lcd.noCursor();
   return inValue;
 }
 
@@ -918,14 +933,20 @@ void configureInput(byte kanal) {
   LCDout(outstr, 13, 2, 5);
   LCDout("dB", 18, 2, 3);
    LCDout("<EXIT>", 0, 3, 10);
+   oldPos=1;
+   LCDout("<", 12, pos, 1);
   while (1) {
-    if (turned && up)
-      pos < mSize ? pos++ : (pos = 1);
-    else if (turned && !up)
-      pos > 2 ? pos-- : (pos = mSize);
-    turned = false;
-    lcd.setCursor(12,pos);
-    lcd.blink();
+    if (turned) {
+      if  (up)
+        pos < mSize ? pos++ : (pos = 1);
+      else if (!up)
+        pos > 1 ? pos-- : (pos = mSize);
+      turned = false;
+      LCDout("<", 12, pos, 1);
+      LCDout(" ", 12, oldPos, 1);
+      oldPos=pos;
+      lcd.setCursor(12,pos);
+    }
     if (fired) {
       fired=false;
       //Serial.print("Pos");
@@ -937,12 +958,14 @@ void configureInput(byte kanal) {
         EEprom.attKoppler[kanal-1]=editFloat(EEprom.attKoppler[kanal-1],13,2,4,1,0.1);
       }
       else if (pos == 3) {
+        lcd.noCursor();
+        lcd.noBlink();
         return;
 
       }
     }
+    delay(20);
   }
-  while (!fired) {};
 
 }
 
@@ -955,6 +978,7 @@ void configureKoppler() {
   LCDout(outstr, 0, 0, 18);
   EMPTY(outstr);
   strcpy(outstr, "Folgt spaeter ...");
+  LCDout(outstr, 0, 1, 18);
   //itoa(kanal, outstr, 10);
   //LCDout(outstr, 19, 0, 1);
   while (!fired) {};
@@ -1118,12 +1142,12 @@ void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR, char *QRGte
   P2mW_out = P2mW / MBwahl[MB[1]].Divisor;
   outstr[0] = '\0';
   dtostrf(U1, 4, 1, outstr);
-  strcat(outstr, "dBm");
+  strcat(outstr, "dBm ");
   LCDout(outstr, 0, 0, 8);
 
   outstr[0] = '\0';
   dtostrf(U2, 4, 1, outstr);
-  strcat(outstr, "dBm");
+  strcat(outstr, "dBm ");
   LCDout(outstr, 12, 0, 8);
 
 
@@ -1140,32 +1164,35 @@ void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR, char *QRGte
   // Nachkommastellen und Einheit werden aus dem Sturct Array gelesen.
   //[0] Eingang1
   //[1] Eingang2
-  outstr[0] = '\0';
+  
   EMPTY(outstr);
   dtostrf(P1mW_out, 5, MBwahl[MB[0]].Nachkomma, outstr);
   strcat(outstr, MBwahl[MB[0]].Unit);
   LCDout(outstr, 1, 1, 8);
 
-  outstr[0] = '\0';
+  
   EMPTY(outstr);
   dtostrf(P2mW_out, 5, MBwahl[MB[1]].Nachkomma, outstr);
   strcat(outstr, MBwahl[MB[1]].Unit);
   LCDout(outstr, 13, 1, 7);
 
-  outstr[0] = '\0';
+ 
   EMPTY(outstr);
   //strcpy(outstr,"ATT:");
   dtostrf(Koppler1, 4, 1, outstr1);
   strcat(outstr, outstr1);
-  LCDout(outstr, 1, 2, 7);
+  LCDout(outstr, 0, 2, 4);
+  if (AttKanal1 >0)  // wir haben daemoung im Pfad konfiguriert
+    LCDout("+",4,2,1);
 
-
-  outstr[0] = '\0';
+  
   EMPTY(outstr);
   //strcpy(outstr,"ATT:");
   dtostrf(Koppler2, 4, 1, outstr1);
   strcat(outstr, outstr1);
   LCDout(outstr, 13, 2, 7);
+  if (AttKanal2 >0)  // wir haben daemoung im Pfad konfiguriert
+    LCDout("+",17,2,1);
 
   //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
   //lbg_draw_val_limited = int(1000 * P1mW / (0.0008 * pow(10, MB1 - 1)));
@@ -1210,8 +1237,9 @@ void screen1(byte kanal, float Ulin, float U, float rawU, float scalFactor, char
   PmW_out = PmW / MBwahl[mb].Divisor;
 
   EMPTY(outstr);
-  dtostrf(Ulin, 4, 1, outstr);
-  strcat(outstr, "dBm");
+  // wir zeigen U an, --> Ulin + Eingangsdaempfung
+  dtostrf(U, 4, 1, outstr);
+  strcat(outstr, "dBm ");
   LCDout(outstr, 2, 0, 8);
   EMPTY(outstr);
   dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
@@ -1292,8 +1320,8 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   U1lin = linearize(smoothU1, linM0, sizeof(linM0) / sizeof(struct LinStruct));
   U2lin = linearize(smoothU2, linM0, sizeof(linM0) / sizeof(struct LinStruct));
 
-  U1 = U1lin + Koppler1;
-  U2 = U2lin + Koppler2;
+  U1 = U1lin + Koppler1 + AttKanal1; //Auskoppeldaempfung und evtl. Daempfungsglied vor dem 8317
+  U2 = U2lin + Koppler2 + AttKanal2;
 
   P1mW = pow(10, U1 / 10.0);
   P2mW = pow(10, U2 / 10.0);
@@ -1321,10 +1349,10 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
       screen0(U1, U2, P1mW, P2mW, VSWR, QRGarray[frequenzIdx].Text);
       break;
     case IN1:
-      screen1(1, U1lin, U1, smoothU1, scalFactor1, QRGarray[EEprom.qrg[0]].Text);
+      screen1(1, U1lin, U1lin+AttKanal1, smoothU1, scalFactor1, QRGarray[EEprom.qrg[0]].Text);
       break;
     case IN2:
-      screen1(2, U2lin, U2, smoothU2, scalFactor2, QRGarray[EEprom.qrg[1]].Text);
+      screen1(2, U2lin, U2lin+AttKanal2, smoothU2, scalFactor2, QRGarray[EEprom.qrg[1]].Text);
       break;
     case MENU:
       showMenu();
