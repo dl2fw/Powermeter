@@ -128,7 +128,12 @@ enum mStates {
   IN1,
   IN2,
   MENU,
+  FRQ,
+  CFG1,
+  CFG2,
+  KOPPLER,
 };
+
 
 
 
@@ -204,6 +209,8 @@ struct KOPPELstruct KOPPELarray[KOPPLERSIZE];
 
 mStates menuState = SWR;
 mStates oldState=IN1;
+mStates CFGstate=FRQ;
+
 
 int posi = 0;
 
@@ -248,7 +255,7 @@ int delta_value = 0;
 boolean items_changed = false;
 //############################################################
 
-boolean refresh=false; // soll Bildschirm neu aufgebaut werden?
+boolean refresh=true; // soll Bildschirm neu aufgebaut werden?
 
 
 CRC8 crc;
@@ -290,17 +297,21 @@ void check_encoder() {
   switch (menuState) { // wir schauen, in welchem Status wir uns befiunden. Hier nutzen wir ein enum der besseren Lesbarkeit.
     case SWR:  // Hauptschirm
       //
+      /*
       if (fired) { // Taste wurde gedrueckt
         fired = false;
         frequenzIdx = chooseQRG(frequenzIdx);
+        stopTasks();
         frequenz = QRGarray[frequenzIdx].frequency;
-        Serial.print("Frequenz:");
-        Serial.print(frequenz);
-        Serial.print("  Index:");
-        Serial.println(frequenzIdx);
         writeEEPROM();
+        startTasks();
         refresh=true;
       }
+      */
+       if (fired) { // Taste wurde gedrueckt
+        fired = false;
+        menuState=MENU;
+       }
       if (turned && up) {
         turned=false;
         menuState = IN1;
@@ -325,7 +336,10 @@ void check_encoder() {
       }
       if (fired) {
         fired = false;
+        stopTasks();
         calibration(1, &scalFactor1, PIN_A1);
+        startTasks();
+        writeEEPROM();
         refresh=true;
       }
       break;
@@ -342,7 +356,10 @@ void check_encoder() {
       }
       if (fired) {
         fired = false;
+        stopTasks();
         calibration(2, &scalFactor2, PIN_A2);
+        startTasks();
+        writeEEPROM();
         refresh=true;
       }
       break;
@@ -600,7 +617,7 @@ void startTasks () {
   t.every(1000, write_raw_seriell, 0);
   t.every(10, take_ads, 0); //lese die analogen Eingänge alle 10ms und glätte diese
   t.every(100, write_lcd, 0); //alle 500ms auf LCD darstellen
-  t.every(20, check_encoder, 0); // alle 20ms Änderungen des Encoders detektieren
+  t.every(50, check_encoder, 0); // alle 20ms Änderungen des Encoders detektieren
 }
 
 void stopTasks() {
@@ -619,7 +636,7 @@ byte chooseQRG(byte idx) {
   char outstr[21];
   char outstr1[21];
   byte maxIdx = sizeof(QRGarray) / sizeof(struct QRGstruct) - 1 ; // groesster Index bei den Frequenzen
-  stopTasks();
+  //stopTasks();
   lcd.clear();
   EMPTY(outstr);
   strcpy(outstr, "Frequenzbereich");
@@ -662,7 +679,7 @@ byte chooseQRG(byte idx) {
 
   }
   // Tasks wieder einschalten
-  startTasks();
+  //startTasks();
   return idx;
   fired = false;
   turned = false;
@@ -682,7 +699,7 @@ void calibration(byte kanal, float *scalFactor, byte pin) {
   byte stage = 1;
 
   // Tasks anhalten, wir machen hier alles selsbt
-  stopTasks();
+  //stopTasks();
   lcd.clear();
   EMPTY(outstr);
   strcpy(outstr, "Kalibrierung Kanal");
@@ -706,9 +723,24 @@ void calibration(byte kanal, float *scalFactor, byte pin) {
     LCDout("              ", 0, 3, 19);
     LCDout("Abbruch...", 0, 3, 17);
     delay(1000);
-    startTasks();
+    //startTasks();
     return;
   }
+  // wir warten auf ein Signal
+  // wir gehen von einen Skalierungsbereich von 0.5-1.5 aus
+  rawU = (float)analogRead(pin);
+  while (((ref*0.5) > rawU) ||  
+         ((ref*1.5)   < rawU)) {
+    delay(20);
+    rawU = (float)analogRead(pin);
+    LCDout("              ", 0, 3, 19);
+    LCDout("Warte...", 0, 3, 17);
+    if (turned) {
+        turned=false;
+        return;
+    }
+  }
+  
   fired = false;
   LCDout("                ", 0, 2, 19);
   LCDout("              ", 0, 3, 19);
@@ -785,10 +817,10 @@ void calibration(byte kanal, float *scalFactor, byte pin) {
   }
   EEprom.calibrated[kanal - 1] = true;
   LCDout("Kalibrierung fertig ", 0, 0, 20);
-  writeEEPROM();
+  //writeEEPROM();
   delay(3000);
   // Tasks wieder einschalten
-  startTasks();
+  //startTasks();
 
 
 }
@@ -935,7 +967,7 @@ void LCDout (char *outstring, byte x, byte y, byte len) {
   //lcd.print(outstring);
 }
 
-void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR) {
+void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR,char *QRGtext) {
 
   int lbg_draw_val_limited;
   char outstr[30];
@@ -1011,14 +1043,12 @@ void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR) {
 
   LCDout(outstr, 13, 3, 7);
 
+   EMPTY(outstr);
+   strcat(outstr,QRGtext);
+   LCDout(outstr, 8, 0, 6);
+   
 
-  lcd.setCursor(10, 0);
-  lcd.print(" ");
-  lcd.setCursor(10, 0);
-
-  lcd.print(item_pos);
-
-  edit = true;
+  //edit = true;
   resetCursor();
 
 }
@@ -1089,18 +1119,8 @@ void screen1(byte kanal, float Ulin, float U, float rawU, float scalFactor,char 
   LCDout(outstr, 13, 3, 7);
 }
 
-void screen2(float U1, float U2, float P1mW, float P2mW, float VSWR) {
-  int lbg_draw_val_limited;
-  float P1mW_out = 0;
-  float P2mW_out = 0;
-  char outstr[30];
-  int i;
-
-  resetCursor();
-  outstr[0] = '\0';
-  EMPTY(outstr);
-  strcpy(outstr, "Screen2");
-  LCDout(outstr, 0, 2, 7);
+void showMenu(){
+  
 }
 
 void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
@@ -1149,13 +1169,16 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   }
   switch(menuState) {
     case SWR:
-      screen0(U1, U2, P1mW, P2mW, VSWR);
+      screen0(U1, U2, P1mW, P2mW, VSWR,QRGarray[frequenzIdx].Text);
       break;
     case IN1:
        screen1(1, U1lin, U1, smoothU1, scalFactor1,QRGarray[EEprom.qrg[0]].Text);
        break;
     case IN2:
       screen1(2, U2lin, U2, smoothU2, scalFactor2,QRGarray[EEprom.qrg[1]].Text);
+      break;
+    case MENU:
+      showMenu();
       break;
   }
   refresh=false;
