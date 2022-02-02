@@ -347,7 +347,7 @@ void check_encoder() {
       }
       if (turned && !up) {
         turned = false;
-        menuState = MENU;
+        menuState = SWR;
         screenNo = 2;
       }
       if (fired) { // Taste wurde gedrueckt
@@ -404,8 +404,9 @@ void check_encoder() {
       if (fired) {
         stopTasks();
         fired = false;
-        switch (menuPos) {
+        switch (dualPos) {
           case 0: // Frequenz Kanal1
+            QRGidx1=editQRG(QRGidx1,4,2);
             refresh = true;
             menuState = DUAL;
             break;
@@ -415,6 +416,7 @@ void check_encoder() {
             menuState = DUAL;
             break;
           case 2: // Frequenz Kanal2
+            QRGidx2=editQRG(QRGidx2,14,2);
             refresh = true;
             menuState = DUAL;
             break;
@@ -940,6 +942,32 @@ void calibration(byte kanal, float * scalFactor, byte pin, float Att) {
   //startTasks();
 
 
+}
+byte editQRG(byte idx, byte x, byte y) {
+  char outstr[21];
+  byte i;
+  EMPTY(outstr);
+  LCDout("    ", x, y,4);
+  LCDout(QRGarray[idx].Text, x, y,4);
+  lcd.setCursor(x, y);
+  lcd.blink();;
+  while (!fired) {
+    if (turned && up)
+        idx < (QRGSIZE-1) ? idx++ : (idx = 0);
+      else if (turned && !up)
+        idx > 0 ? idx-- : (idx = QRGSIZE);
+    if (turned) {
+      LCDout("    ", x, y,4);
+      LCDout(QRGarray[idx].Text, x, y,4);
+      turned = false;
+    }
+    delay(20);
+  }
+  fired = false;
+  turned = false;
+  lcd.noBlink();
+  lcd.noCursor();
+  return idx;
 }
 
 float editFloat(float inValue, byte x, byte y, byte len, byte frac, float fStep) {
@@ -1501,10 +1529,10 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
       screen0(U1, U2, P1mW, P2mW, VSWR, QRGarray[frequenzIdx].Text);
       break;
     case IN1:
-      screen1(1, U1lin, U1lin + AttKanal1, smoothU1, scalFactor1, QRGarray[EEprom.qrg[0]].Text);
+      screen1(1, U1lin, U1lin + AttKanal1, smoothU1, scalFactor1, QRGarray[QRGidx1].Text);
       break;
     case IN2:
-      screen1(2, U2lin, U2lin + AttKanal2, smoothU2, scalFactor2, QRGarray[EEprom.qrg[1]].Text);
+      screen1(2, U2lin, U2lin + AttKanal2, smoothU2, scalFactor2, QRGarray[QRGidx2].Text);
       break;
     case DUAL:
       screen2(U1lin + AttKanal1, U2lin + AttKanal2, AttKanal1, AttKanal2, QRGarray[QRGidx1].Text, QRGarray[QRGidx2].Text);
