@@ -142,6 +142,13 @@ enum mStates {
   KOPPLER,
 };
 
+enum kStates {
+  SELECT,
+  CONF,
+  EDIT,
+  EXIT,
+  DEL,
+};
 
 
 
@@ -202,18 +209,20 @@ struct QRGstruct {
   char Text[10];      // Anzeigetext
 };
 
-struct KOPPELstruct {
-  byte  qrgIdx[QRGSIZE];      // Index de Frequenz, bezieht sich auf QRGstruct/QRGarray
+struct KOPPLERstruct {
+  boolean configured;              // wird
+  //byte  qrgIdx[QRGSIZE];      // Index de Frequenz, bezieht sich auf QRGstruct/QRGarray
   float sigDB[QRGSIZE];       // Auskoppeldaempfung
   byte minQRGidx;             // tiefste nutzbare Frequenz (Index, siehe oben)
   byte maxQRGidx;             // größte Nutzbare Frequenz
+  float attenuation;          // Daempfung
   char name[20];              // Namen des Kopplers
 };
 
 struct MBStruct MBwahl[10];
 struct EEStruct EEprom;
 struct QRGstruct QRGarray[QRGSIZE];
-struct KOPPELstruct KOPPELarray[KOPPLERSIZE];
+struct KOPPLERstruct KOPPLERarray[KOPPLERSIZE];
 
 mStates menuState = SWR;
 mStates oldState = IN1;
@@ -406,7 +415,7 @@ void check_encoder() {
         fired = false;
         switch (dualPos) {
           case 0: // Frequenz Kanal1
-            QRGidx1=editQRG(QRGidx1,4,2);
+            QRGidx1 = editQRG(QRGidx1, 4, 2);
             refresh = true;
             menuState = DUAL;
             break;
@@ -416,7 +425,7 @@ void check_encoder() {
             menuState = DUAL;
             break;
           case 2: // Frequenz Kanal2
-            QRGidx2=editQRG(QRGidx2,14,2);
+            QRGidx2 = editQRG(QRGidx2, 14, 2);
             refresh = true;
             menuState = DUAL;
             break;
@@ -432,11 +441,14 @@ void check_encoder() {
     case MENU:    // wir sind im Menu
       //
       if (turned && up)
-        menuPos < MENUSIZE ? menuPos++ : (menuPos = 0);
+        menuPos < (MENUSIZE - 1) ? menuPos++ : (menuPos = 0);
       else if (turned && !up)
-        menuPos > 0 ? menuPos-- : (menuPos = MENUSIZE);
+        menuPos > 0 ? menuPos-- : (menuPos = (MENUSIZE - 1));
       turned = false;
+      //Serial.print("Conf-Menu menuPos:");
+      //Serial.println(menuPos);
       if (fired) {
+        // Serial.println("Fired!");;
         stopTasks();
         fired = false;
         switch (menuPos) {
@@ -464,8 +476,9 @@ void check_encoder() {
             refresh = true;
             break;
           case 3: // Konfiguration Koppler
+            Serial.println("Konfiguriere Koppler");
             configureKoppler();
-            writeEEPROM();
+            //writeEEPROM();
             menuState = SWR;
             break;
         }
@@ -947,18 +960,18 @@ byte editQRG(byte idx, byte x, byte y) {
   char outstr[21];
   byte i;
   EMPTY(outstr);
-  LCDout("    ", x, y,4);
-  LCDout(QRGarray[idx].Text, x, y,4);
+  LCDout("    ", x, y, 4);
+  LCDout(QRGarray[idx].Text, x, y, 4);
   lcd.setCursor(x, y);
   lcd.blink();;
   while (!fired) {
     if (turned && up)
-        idx < (QRGSIZE-1) ? idx++ : (idx = 0);
-      else if (turned && !up)
-        idx > 0 ? idx-- : (idx = QRGSIZE);
+      idx < (QRGSIZE - 1) ? idx++ : (idx = 0);
+    else if (turned && !up)
+      idx > 0 ? idx-- : (idx = (QRGSIZE - 1));
     if (turned) {
-      LCDout("    ", x, y,4);
-      LCDout(QRGarray[idx].Text, x, y,4);
+      LCDout("    ", x, y, 4);
+      LCDout(QRGarray[idx].Text, x, y, 4);
       turned = false;
     }
     delay(20);
@@ -1062,22 +1075,226 @@ void configureInput(byte kanal) {
 
 }
 
+void refreshKoppler(byte koppler) {
+  // Ausgabe der Kopplerdaten
+  boolean configured = false;
+  char outstr[21];
+  byte i;
+  byte minIdx, maxIdx;
+
+  LCDout("Koppler:", 0, 0, 8);
+  EMPTY(outstr);
+  itoa(koppler, outstr, 10);
+  LCDout(outstr, 9, 0, 8);
+  LCDout("Min:", 0, 1, 4);
+  LCDout("Max:", 10, 1, 4);
+  LCDout("Daempfung:", 0, 2, 10);
+  LCDout("EXIT  EDIT  DEL", 0, 3, 20);
+  configured = KOPPLERarray[koppler].configured;
+
+  if (configured) { // den haben wir konfiguriert
+    LCDout("[konf.]  ", 11, 0, 9);
+    minIdx = KOPPLERarray[koppler].minQRGidx;
+    maxIdx = KOPPLERarray[koppler].maxQRGidx;
+    LCDout(QRGarray[minIdx].Text, 5, 1, 4);
+    LCDout(QRGarray[maxIdx].Text, 14, 1, 4);
+    EMPTY(outstr);
+    dtostrf(KOPPLERarray[koppler].attenuation, 4, 1, outstr);
+    LCDout(outstr, 10, 2, 4);
+    LCDout("dB", 14, 2, 2);
+  }
+  else {
+    LCDout("[NO konf].", 11, 0, 9);
+    LCDout("    ", 5, 1, 4);
+    LCDout("    ", 14, 1, 14);
+    LCDout("      ", 10, 2, 6);
+  }
+}
+
+void refreshPosition(byte edtPos) {
+  switch (edtPos) {
+    case 0:
+      LCDout("<", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 18, 2, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout(" ", 17, 3, 1);
+      break;
+    case 1:
+      LCDout(" ", 9, 1, 1);
+      LCDout("<", 19, 1, 1);
+      LCDout(" ", 18, 2, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout(" ", 11, 3, 1);
+      LCDout(" ", 17, 3, 1);
+      break;
+    case 2:
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout("<", 18, 2, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout(" ", 11, 3, 1);
+      LCDout(" ", 17, 3, 1);
+      break;
+    case 3:
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 18, 2, 1);
+      LCDout("<", 5, 3, 1);
+      LCDout(" ", 11, 3, 1);
+      LCDout(" ", 17, 3, 1);
+      break;
+    case 4:
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 18, 2, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout("<", 11, 3, 1);
+      LCDout(" ", 17, 3, 1);
+      break;
+    case 5:
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 18, 2, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout(" ", 11, 3, 1);
+      LCDout("<", 17, 3, 1);
+      break;
+  }
+}
+
+
+float *editStuetzstellen(float *sigDB,byte aSize) {
+  // Pflege der Stuetzstellen
+  
+}
 void configureKoppler() {
   char outstr[21];
   byte i;
-  lcd.clear();
-  EMPTY(outstr);
-  strcpy(outstr, "Konf. Koppler");
-  LCDout(outstr, 0, 0, 18);
-  EMPTY(outstr);
-  strcpy(outstr, "Folgt spaeter ...");
-  LCDout(outstr, 0, 1, 18);
-  //itoa(kanal, outstr, 10);
-  //LCDout(outstr, 19, 0, 1);
-  while (!fired) {};
-  fired = 0;
+  byte koppler = 0;
+  byte minIdx, maxIdx;
+  boolean exit = false;
+  byte edtPos = 0;
+  byte edtMax = 5;
+  boolean configured = false;
+  boolean exitIT = false;
+  float Att = 0.0;
+  boolean edit2 = false;
+  kStates state = SELECT;
 
-}
+  /*enum kStates {
+    SELECT,
+    CONF,
+    EDIT,
+    EXIT,
+    DEL,
+    };
+  */
+
+  lcd.clear();
+  fired = false;
+  turned = false;
+  while (!exitIT) {
+    switch (state) {
+      case SELECT:    //Auswahl des Kopplers
+        while (!fired) {
+          refreshKoppler(koppler);
+          if (turned && up)
+            koppler < (KOPPLERSIZE - 1) ? koppler++ : (koppler = 0);
+          else if (turned && !up)
+            koppler > 0 ? koppler-- : (koppler = (KOPPLERSIZE - 1));
+          turned = false;
+        }
+        fired = 0;
+        state = CONF;
+        edtPos = 0;
+        break;
+      case CONF:    // Konfiguration des Kopplers
+        while (!fired) {
+          refreshPosition(edtPos); // Pfeil < an die richtige Position setzen
+          if (turned && up)
+            edtPos < edtMax ? edtPos++ : (edtPos = 0);
+          else if (turned && !up)
+            edtPos > 0 ? edtPos-- : (edtPos = edtMax);
+          turned = false;
+        }
+        fired = false;
+        configured=KOPPLERarray[koppler].configured;
+        switch (edtPos) {
+          case 0:       // Min QRG
+            minIdx = KOPPLERarray[koppler].minQRGidx;
+            if (!configured) {
+              minIdx = 0; //
+              KOPPLERarray[koppler].maxQRGidx = QRGSIZE - 1;
+              KOPPLERarray[koppler].attenuation = 0.0;
+
+            }
+            KOPPLERarray[koppler].minQRGidx = editQRG(minIdx, 5, 1);
+            KOPPLERarray[koppler].configured = true; // nun ist er konfiguriert, Werte auch anzeigen
+            // wir springen direkt in den Edit Modus der Max Frequenz
+            edtPos = 1;
+            fired = true;
+            break;
+          case 1:     // Max QRG
+            maxIdx = KOPPLERarray[koppler].maxQRGidx;
+            if (!configured) {
+              minIdx = 0; //
+              KOPPLERarray[koppler].minQRGidx = 0;
+              KOPPLERarray[koppler].attenuation = 0.0;
+            }
+            KOPPLERarray[koppler].maxQRGidx = editQRG(maxIdx, 14, 1);
+            KOPPLERarray[koppler].configured = true; // nun ist er konfiguriert, Werte auch anzeigen
+            // wir springen direkt in den Edit Modus der Attenuation
+            edtPos = 2;
+            fired = true;
+            break;
+          case 2:     // Att
+            Att = KOPPLERarray[koppler].attenuation;
+            if (!configured) {
+              Att = 0.0; //
+              KOPPLERarray[koppler].minQRGidx = 0;
+              KOPPLERarray[koppler].maxQRGidx = QRGSIZE - 1;
+            }
+            KOPPLERarray[koppler].attenuation = editFloat(Att, 10, 2, 4, 1, 0.5);
+            if (!configured) {
+               // nun fuellen wir das sigDB Array mit dem konfigurierten Wert
+               for(i=0;i<QRGSIZE;i++)
+                  KOPPLERarray[koppler].sigDB[i]=KOPPLERarray[koppler].attenuation;
+            }
+            KOPPLERarray[koppler].configured = true; // nun ist er konfiguriert, Werte auch anzeigen
+           
+            edtPos < edtMax ? edtPos++ : (edtPos = 0); //eine Position weiterspringen, wenn raus aus dem Edit
+            break;
+          case 3:     // Exit
+            state = SELECT; // zureuck zur Kopplerauswahl
+            exitIT = true;
+            break;
+          case 4:     // Edit
+            state = EDIT;
+            edtPos < edtMax ? edtPos++ : (edtPos = 0); //eine Position weiterspringen, wenn raus aus dem Edit
+            break;
+          case 5:     // Del
+            KOPPLERarray[koppler].configured = false;
+            state = SELECT; // zureuck zur Kopplerauswahl
+            break;
+        }
+        refreshKoppler(koppler);
+        break;
+      case EDIT :  // Edit der Stützstellen
+          //sigDB ist Array von float
+          editStuetzstellen(KOPPLERarray[koppler].sigDB,QRGSIZE);
+          refreshKoppler(koppler);
+          state=SELECT;
+          break;
+
+    } //switch state
+  } //while (außen)
+
+} //configureKoppler
+
+
+
 
 void take_ads()
 {
