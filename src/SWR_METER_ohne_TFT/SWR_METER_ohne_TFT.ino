@@ -119,7 +119,7 @@ float scalFactor2 = 1.0 ;
 #define QRGSIZE 17
 
 // Anzahl der zu verwaltenden Kopppler, durch EEPROM Größe beschränkt
-#define KOPPLERSIZE 4
+#define KOPPLERSIZE 10
 
 
 // Anzahl der Menueeintrage
@@ -127,6 +127,10 @@ float scalFactor2 = 1.0 ;
 
 // Anzahl des CFG Werte im DUAL Modus
 #define DUALSIZE 4
+
+//EEPROM Adresse fuer Koppler
+// muss evtl. angepasst werden, wenn das andere Struct zu groß wird
+#define EEPROM_K_ADDR 100
 
 // Status für check_encoder, wo wir gerade stehen
 enum mStates {
@@ -216,11 +220,17 @@ struct KOPPLERstruct {
   byte minQRGidx;             // tiefste nutzbare Frequenz (Index, siehe oben)
   byte maxQRGidx;             // größte Nutzbare Frequenz
   float attenuation;          // Daempfung
-  char name[20];              // Namen des Kopplers
+  //char name[20];              // Namen des Kopplers
+};
+
+struct EEKopplerStruct {
+  struct KOPPLERstruct Karray[KOPPLERSIZE];    // Gesamtes Kopplerdefinition
+  byte CRC;                             // Pruefsumme
 };
 
 struct MBStruct MBwahl[10];
 struct EEStruct EEprom;
+struct EEKopplerStruct EEpromKoppler;
 struct QRGstruct QRGarray[QRGSIZE];
 struct KOPPLERstruct KOPPLERarray[KOPPLERSIZE];
 
@@ -478,7 +488,7 @@ void check_encoder() {
           case 3: // Konfiguration Koppler
             Serial.println("Konfiguriere Koppler");
             configureKoppler();
-            //writeEEPROM();
+            writeEEPROMKoppler(EEPROM_K_ADDR);
             menuState = SWR;
             break;
         }
@@ -604,6 +614,7 @@ void setup() {
   // einladen der im EEProm gspeicherten Werte
   // anhand der Checksumme schauen wir, ob die Daten konsitent sind.
 
+
   if (!readEEPROM()) {
     lcd.setCursor(0, 3);
     lcd.print("EEPROM leer, init..");
@@ -621,6 +632,24 @@ void setup() {
     lcd.setCursor(0, 3);
     lcd.print("Lese EEPROM...");
   }
+  
+  // nun die Koppler einlesen,
+  if (!readEEPROMKoppler(EEPROM_K_ADDR)) {
+    lcd.setCursor(0, 3);
+    lcd.print("EEPROM Kopplerinit..");
+    writeEEPROMKoppler(EEPROM_K_ADDR);
+
+    if (!readEEPROMKoppler(EEPROM_K_ADDR)) {
+      lcd.setCursor(0, 3);
+      lcd.print("EEPROM Koppler ERROR");
+      while (1);
+    }
+  }
+  else {
+    lcd.setCursor(0, 3);
+    lcd.print("Lese EEPROM Koppler");
+  }
+  
   delay(1000);
   lcd.clear();
   // Sind die Kanaele kalibiert?
@@ -706,12 +735,43 @@ boolean readEEPROM() {
   }
 }
 
+
+boolean readEEPROMKoppler(int eeAddress) {
+  byte checkCRC = 0;
+
+  Serial.print("Lese EEPROM  Koppler...");
+  Serial.print(" Groesse:");
+  Serial.println(sizeof(EEpromKoppler));
+  EEPROM.get(eeAddress, EEpromKoppler);
+  //EEPROM.get(eeAddress, KOPPLERarray);
+  //return true;
+
+  crc.reset();
+  checkCRC = EEpromKoppler.CRC;
+  Serial.print("  CRC Koppler read:");
+  Serial.print(EEpromKoppler.CRC);
+  EEpromKoppler.CRC = 0; // sonst stimmt die CRC Summe nicht, sie darf nicht  mit eingerechnet werden
+  crc.add((uint8_t *)&EEpromKoppler, sizeof(EEpromKoppler));
+  Serial.print("  CRC calc:");
+  Serial.println(crc.getCRC());
+  if ( crc.getCRC()  != checkCRC) {
+    Serial.println("EEPROM Koppler Checksumme falsch");
+    return false;
+  }
+  else {
+    Serial.println("EEPROM Koppler Checksumme OK");
+    // setzen der globalen Variablen
+      memcpy(KOPPLERarray,&EEpromKoppler.Karray,sizeof(KOPPLERstruct)*KOPPLERSIZE);  
+    return true;
+  }
+
+}
+
 void writeEEPROM() {
   int eeAddress = 0;
 
   Serial.print("Schreibe EEPROM...");
-
-
+  
   EEprom.scalFactor[0] = scalFactor1;
   EEprom.scalFactor[1] = scalFactor2;
   EEprom.attKanal[0] = AttKanal1;
@@ -723,6 +783,8 @@ void writeEEPROM() {
   // muss evtl. nochmal überdacht werden, ob das so Sinn macht.
   EEprom.qrg[0] = frequenzIdx;
   EEprom.qrg[1] = frequenzIdx;
+
+
   EEprom.CRC = 0;
 
   crc.reset();
@@ -736,6 +798,31 @@ void writeEEPROM() {
 
 }
 
+void writeEEPROMKoppler(int eeAddress ) {
+  byte i,j;
+
+  Serial.print("Schreibe EEPROM Koppler...");
+  Serial.print(" Groesse:");
+  Serial.print(sizeof(KOPPLERstruct)*KOPPLERSIZE);
+
+  //wir kopieren das KopplerArray in EEpromKoppler, weil wir die Checksumme in der Struct brauchen
+  memcpy(&EEpromKoppler.Karray,&KOPPLERarray,sizeof(KOPPLERstruct)*KOPPLERSIZE);  
+  EEpromKoppler.CRC = 0;
+
+  crc.reset();
+  crc.add((uint8_t *)&EEpromKoppler, sizeof(EEpromKoppler));
+  EEpromKoppler.CRC = crc.getCRC();
+
+  Serial.print(" CRC Koppler:");
+  Serial.println(EEpromKoppler.CRC);
+  Serial.print(" Groesse pro Koppler:");
+  Serial.println(sizeof(KOPPLERstruct));
+  
+
+  EEPROM.put(eeAddress, EEpromKoppler);
+  //EEPROM.put(eeAddress, KOPPLERarray);
+
+}
 
 void startTasks () {
   t.every(1000, write_raw_seriell, 0);
@@ -991,6 +1078,7 @@ float editFloat(float inValue, byte x, byte y, byte len, byte frac, float fStep)
   LCDout(outstr, x, y, len);
   lcd.setCursor(x, y);
   lcd.blink();;
+  fired=false;
   while (!fired) {
     if (turned && up) {
       inValue += fStep;
@@ -1165,9 +1253,75 @@ void refreshPosition(byte edtPos) {
 }
 
 
-float *editStuetzstellen(float *sigDB,byte aSize) {
-  // Pflege der Stuetzstellen
-  
+void editStuetzstellen(byte koppler) {
+  // Pflege der Stuetzstellen im globalen StructArray
+  byte i;
+  char outstr[21];
+  byte minIdx;
+  byte maxIdx;
+  byte idx;
+  boolean exitIT = false;
+  float att;
+
+  lcd.clear();
+  LCDout("EDIT Koppler:", 0, 0, 14);
+  EMPTY(outstr);
+  itoa(koppler, outstr, 10);
+  LCDout(outstr, 15, 0, 2);
+  LCDout("Min:", 0, 1, 4);
+  LCDout("Max:", 10, 1, 4);
+  LCDout("<SAVE>", 7, 3, 6);
+  minIdx = KOPPLERarray[koppler].minQRGidx;
+  maxIdx = KOPPLERarray[koppler].maxQRGidx;
+  LCDout(QRGarray[minIdx].Text, 5, 1, 4);
+  LCDout(QRGarray[maxIdx].Text, 14, 1, 4);
+  //KOPPLERarray[koppler].sigDB[i]=KOPPLERarray[koppler].attenuation;
+  idx = minIdx;
+  fired=false;
+  turned=false;
+  while (idx <= maxIdx) {
+    LCDout("    ", 0, 2, 4);
+    LCDout(QRGarray[idx].Text, 0, 2, 4);
+    LCDout(":", 4, 2, 1);
+    EMPTY(outstr);
+    att = KOPPLERarray[koppler].sigDB[idx];
+    dtostrf(att, 4, 1, outstr);
+    LCDout(outstr, 7, 2, 4);
+    LCDout("dB", 12, 2, 2);
+    if (!exitIT) { 
+      LCDout("<<", 15, 2, 2);
+      LCDout("        ", 6, 3, 8);
+      LCDout("<SAVE>", 7, 3, 6);
+    }
+    while(!turned && !fired) {} ;
+    if (fired && exitIT) {
+        fired=false;
+        lcd.clear();
+        return;
+    }
+     if (fired) {
+      KOPPLERarray[koppler].sigDB[idx] = editFloat(att, 7, 2, 4, 1, 0.1);
+      fired=false;
+    }
+    if (turned && exitIT) {
+        //Save wieder verlassen
+        exitIT=false;
+        idx=maxIdx;
+        turned=false;
+    }
+    if (turned && up && (idx < maxIdx)) 
+        idx++;
+    else if (turned && !up && (idx > minIdx ) )
+       idx--;
+    else if( turned && up && (idx == maxIdx)) { // Sonderbehandlung, wir springen auf SAVE
+      LCDout("  ", 15, 2, 2);
+      LCDout("<<SAVE>>", 6, 3, 8);
+      exitIT=true;
+    }
+    turned = false;
+   
+  }
+
 }
 void configureKoppler() {
   char outstr[21];
@@ -1220,7 +1374,7 @@ void configureKoppler() {
           turned = false;
         }
         fired = false;
-        configured=KOPPLERarray[koppler].configured;
+        configured = KOPPLERarray[koppler].configured;
         switch (edtPos) {
           case 0:       // Min QRG
             minIdx = KOPPLERarray[koppler].minQRGidx;
@@ -1257,13 +1411,13 @@ void configureKoppler() {
               KOPPLERarray[koppler].maxQRGidx = QRGSIZE - 1;
             }
             KOPPLERarray[koppler].attenuation = editFloat(Att, 10, 2, 4, 1, 0.5);
-            if (!configured) {
-               // nun fuellen wir das sigDB Array mit dem konfigurierten Wert
-               for(i=0;i<QRGSIZE;i++)
-                  KOPPLERarray[koppler].sigDB[i]=KOPPLERarray[koppler].attenuation;
-            }
+            //if (!configured) {
+              // nun fuellen wir das sigDB Array mit dem konfigurierten Wert
+              for (i = 0; i < QRGSIZE; i++)
+                KOPPLERarray[koppler].sigDB[i] = KOPPLERarray[koppler].attenuation;
+            //}
             KOPPLERarray[koppler].configured = true; // nun ist er konfiguriert, Werte auch anzeigen
-           
+
             edtPos < edtMax ? edtPos++ : (edtPos = 0); //eine Position weiterspringen, wenn raus aus dem Edit
             break;
           case 3:     // Exit
@@ -1282,11 +1436,11 @@ void configureKoppler() {
         refreshKoppler(koppler);
         break;
       case EDIT :  // Edit der Stützstellen
-          //sigDB ist Array von float
-          editStuetzstellen(KOPPLERarray[koppler].sigDB,QRGSIZE);
-          refreshKoppler(koppler);
-          state=SELECT;
-          break;
+        //sigDB ist Array von float
+        editStuetzstellen(koppler);
+        refreshKoppler(koppler);
+        state = SELECT;
+        break;
 
     } //switch state
   } //while (außen)
