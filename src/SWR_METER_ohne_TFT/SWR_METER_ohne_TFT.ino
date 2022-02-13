@@ -119,7 +119,7 @@ float scalFactor2 = 1.0 ;
 #define QRGSIZE 17
 
 // Anzahl der zu verwaltenden Kopppler, durch EEPROM Größe beschränkt
-#define KOPPLERSIZE 4
+#define KOPPLERSIZE 10
 
 
 // Anzahl der Menueeintrage
@@ -128,6 +128,10 @@ float scalFactor2 = 1.0 ;
 // Anzahl des CFG Werte im DUAL Modus
 #define DUALSIZE 4
 
+//EEPROM Adresse fuer Koppler
+// muss evtl. angepasst werden, wenn das andere Struct zu groß wird
+#define EEPROM_K_ADDR 100
+
 // Status für check_encoder, wo wir gerade stehen
 enum mStates {
   SWR,
@@ -135,13 +139,22 @@ enum mStates {
   IN2,
   MENU,
   DUAL,
+  DUALKOPPLER,
   DUALCFG,
+  DUALKOPPLERCFG,
   FRQ,
   CFG1,
   CFG2,
   KOPPLER,
 };
 
+enum kStates {
+  SELECT,
+  CONF,
+  EDIT,
+  EXIT,
+  DEL,
+};
 
 
 
@@ -190,7 +203,7 @@ struct MBStruct {
 struct EEStruct {
   float scalFactor[2];  // Skalierung der beiden Kanaäle
   float attKanal[2];    //Daempfungskonstatnte pro Kanal
-  float attKoppler[2];  // Richtkoppler Auskopplung
+  byte idxKoppler[2];  // Richtkoppler Auskopplung
   byte qrg[2];          // Messfrewuenzen pro Kanal
   byte SWRqrg;          // Messfrequenz für die SWR Messung
   boolean calibrated[2]; // sind die Kanäle kalibriert?
@@ -202,18 +215,26 @@ struct QRGstruct {
   char Text[10];      // Anzeigetext
 };
 
-struct KOPPELstruct {
-  byte  qrgIdx[QRGSIZE];      // Index de Frequenz, bezieht sich auf QRGstruct/QRGarray
+struct KOPPLERstruct {
+  boolean configured;              // wird
+  //byte  qrgIdx[QRGSIZE];      // Index de Frequenz, bezieht sich auf QRGstruct/QRGarray
   float sigDB[QRGSIZE];       // Auskoppeldaempfung
   byte minQRGidx;             // tiefste nutzbare Frequenz (Index, siehe oben)
   byte maxQRGidx;             // größte Nutzbare Frequenz
-  char name[20];              // Namen des Kopplers
+  float attenuation;          // Daempfung
+  //char name[20];              // Namen des Kopplers
+};
+
+struct EEKopplerStruct {
+  struct KOPPLERstruct Karray[KOPPLERSIZE];    // Gesamtes Kopplerdefinition
+  byte CRC;                             // Pruefsumme
 };
 
 struct MBStruct MBwahl[10];
 struct EEStruct EEprom;
+struct EEKopplerStruct EEpromKoppler;
 struct QRGstruct QRGarray[QRGSIZE];
-struct KOPPELstruct KOPPELarray[KOPPLERSIZE];
+struct KOPPLERstruct KOPPLERarray[KOPPLERSIZE];
 
 mStates menuState = SWR;
 mStates oldState = IN1;
@@ -312,18 +333,6 @@ void check_encoder() {
 
   switch (menuState) { // wir schauen, in welchem Status wir uns befiunden. Hier nutzen wir ein enum der besseren Lesbarkeit.
     case SWR:  // Hauptschirm
-      //
-      /*
-        if (fired) { // Taste wurde gedrueckt
-        fired = false;
-        frequenzIdx = chooseQRG(frequenzIdx);
-        stopTasks();
-        frequenz = QRGarray[frequenzIdx].frequency;
-        writeEEPROM();
-        startTasks();
-        refresh=true;
-        }
-      */
       if (fired) { // Taste wurde gedrueckt
         fired = false;
         menuState = MENU;
@@ -342,8 +351,8 @@ void check_encoder() {
     case DUAL:
       if (turned && up) {
         turned = false;
-        menuState = IN1;
-        screenNo = 1;
+        menuState = DUALKOPPLER;
+        screenNo = 3;
       }
       if (turned && !up) {
         turned = false;
@@ -353,6 +362,22 @@ void check_encoder() {
       if (fired) { // Taste wurde gedrueckt
         fired = false;
         menuState = DUALCFG;
+      }
+      break;
+      case DUALKOPPLER:
+      if (turned && up) {
+        turned = false;
+        menuState = IN1;
+        screenNo = 2;
+      }
+      if (turned && !up) {
+        turned = false;
+        menuState = DUAL;
+        screenNo = 1;
+      }
+      if (fired) { // Taste wurde gedrueckt
+        fired = false;
+        menuState = DUALKOPPLERCFG;
       }
       break;
     case IN1:   // Eingang1 Anzeige
@@ -406,7 +431,7 @@ void check_encoder() {
         fired = false;
         switch (dualPos) {
           case 0: // Frequenz Kanal1
-            QRGidx1=editQRG(QRGidx1,4,2);
+            QRGidx1 = editQRG(QRGidx1, 4, 2);
             refresh = true;
             menuState = DUAL;
             break;
@@ -416,7 +441,7 @@ void check_encoder() {
             menuState = DUAL;
             break;
           case 2: // Frequenz Kanal2
-            QRGidx2=editQRG(QRGidx2,14,2);
+            QRGidx2 = editQRG(QRGidx2, 14, 2);
             refresh = true;
             menuState = DUAL;
             break;
@@ -432,17 +457,26 @@ void check_encoder() {
     case MENU:    // wir sind im Menu
       //
       if (turned && up)
-        menuPos < MENUSIZE ? menuPos++ : (menuPos = 0);
+        menuPos < (MENUSIZE - 1) ? menuPos++ : (menuPos = 0);
       else if (turned && !up)
-        menuPos > 0 ? menuPos-- : (menuPos = MENUSIZE);
+        menuPos > 0 ? menuPos-- : (menuPos = (MENUSIZE - 1));
       turned = false;
+      //Serial.print("Conf-Menu menuPos:");
+      //Serial.println(menuPos);
       if (fired) {
+        // Serial.println("Fired!");;
         stopTasks();
         fired = false;
         switch (menuPos) {
           case 0: // Frequenz
             frequenzIdx = chooseQRG(frequenzIdx);
             frequenz = QRGarray[frequenzIdx].frequency;
+            Koppler1=KOPPLERarray[EEprom.idxKoppler[0]].sigDB[frequenzIdx];
+            Serial.print("Koppler1:");
+            Serial.print(Koppler1);
+            Koppler2=KOPPLERarray[EEprom.idxKoppler[1]].sigDB[frequenzIdx];
+            Serial.print(" Koppler2:");
+            Serial.println(Koppler2);
             writeEEPROM();
             refresh = true;
             menuState = SWR;
@@ -450,7 +484,7 @@ void check_encoder() {
           case 1: // Konfiguration Kanal 1
             configureInput(1);
             AttKanal1 = EEprom.attKanal[0];
-            Koppler1 = EEprom.attKoppler[0];
+            Koppler1=KOPPLERarray[EEprom.idxKoppler[0]].sigDB[frequenzIdx];
             writeEEPROM();
             menuState = SWR;
             refresh = true;
@@ -458,14 +492,15 @@ void check_encoder() {
           case 2: // Konfiguration Kanal 2
             configureInput(2);
             AttKanal2 = EEprom.attKanal[1];
-            Koppler1 = EEprom.attKoppler[1];
+            Koppler2=KOPPLERarray[EEprom.idxKoppler[1]].sigDB[frequenzIdx];
             writeEEPROM();
             menuState = SWR;
             refresh = true;
             break;
           case 3: // Konfiguration Koppler
+            Serial.println("Konfiguriere Koppler");
             configureKoppler();
-            writeEEPROM();
+            writeEEPROMKoppler(EEPROM_K_ADDR);
             menuState = SWR;
             break;
         }
@@ -591,6 +626,7 @@ void setup() {
   // einladen der im EEProm gspeicherten Werte
   // anhand der Checksumme schauen wir, ob die Daten konsitent sind.
 
+
   if (!readEEPROM()) {
     lcd.setCursor(0, 3);
     lcd.print("EEPROM leer, init..");
@@ -608,6 +644,24 @@ void setup() {
     lcd.setCursor(0, 3);
     lcd.print("Lese EEPROM...");
   }
+  
+  // nun die Koppler einlesen,
+  if (!readEEPROMKoppler(EEPROM_K_ADDR)) {
+    lcd.setCursor(0, 3);
+    lcd.print("EEPROM Kopplerinit..");
+    writeEEPROMKoppler(EEPROM_K_ADDR);
+
+    if (!readEEPROMKoppler(EEPROM_K_ADDR)) {
+      lcd.setCursor(0, 3);
+      lcd.print("EEPROM Koppler ERROR");
+      while (1);
+    }
+  }
+  else {
+    lcd.setCursor(0, 3);
+    lcd.print("Lese EEPROM Koppler");
+  }
+  
   delay(1000);
   lcd.clear();
   // Sind die Kanaele kalibiert?
@@ -680,8 +734,8 @@ boolean readEEPROM() {
     scalFactor2 = EEprom.scalFactor[1];
     AttKanal1 = EEprom.attKanal[0];
     AttKanal2 = EEprom.attKanal[1];
-    Koppler1 = EEprom.attKoppler[0];
-    Koppler2 = EEprom.attKoppler[1];
+    Koppler1 = KOPPLERarray[EEprom.idxKoppler[0]].attenuation;
+    Koppler2 = KOPPLERarray[EEprom.idxKoppler[1]].attenuation;
     frequenzIdx = EEprom.SWRqrg;
     frequenz = QRGarray[frequenzIdx].frequency;
     QRGidx1 = EEprom.qrg[0];
@@ -693,23 +747,57 @@ boolean readEEPROM() {
   }
 }
 
+
+boolean readEEPROMKoppler(int eeAddress) {
+  byte checkCRC = 0;
+
+  Serial.print("Lese EEPROM  Koppler...");
+  Serial.print(" Groesse:");
+  Serial.println(sizeof(EEpromKoppler));
+  EEPROM.get(eeAddress, EEpromKoppler);
+  //EEPROM.get(eeAddress, KOPPLERarray);
+  //return true;
+
+  crc.reset();
+  checkCRC = EEpromKoppler.CRC;
+  //Serial.print("  CRC Koppler read:");
+  //Serial.print(EEpromKoppler.CRC);
+  EEpromKoppler.CRC = 0; // sonst stimmt die CRC Summe nicht, sie darf nicht  mit eingerechnet werden
+  crc.add((uint8_t *)&EEpromKoppler, sizeof(EEpromKoppler));
+  //Serial.print("  CRC calc:");
+  //Serial.println(crc.getCRC());
+  if ( crc.getCRC()  != checkCRC) {
+    Serial.println("EEPROM Koppler Checksumme falsch");
+    return false;
+  }
+  else {
+    //Serial.println("EEPROM Koppler Checksumme OK");
+    // setzen der globalen Variablen
+      memcpy(KOPPLERarray,&EEpromKoppler.Karray,sizeof(KOPPLERstruct)*KOPPLERSIZE);  
+    printKopplerCFG();
+    return true;
+  }
+
+}
+
 void writeEEPROM() {
   int eeAddress = 0;
 
   Serial.print("Schreibe EEPROM...");
-
-
+  
   EEprom.scalFactor[0] = scalFactor1;
   EEprom.scalFactor[1] = scalFactor2;
   EEprom.attKanal[0] = AttKanal1;
   EEprom.attKanal[1] = AttKanal2;
-  EEprom.attKoppler[0] = Koppler1;
-  EEprom.attKoppler[1] = Koppler2;
+//  EEprom.attKoppler[0] = Koppler1;
+//  EEprom.attKoppler[1] = Koppler2;
   EEprom.SWRqrg = frequenzIdx;
   // wir speichern nicht die bei den kanaelen gewwahlte Frequenz, die ist nur fuer die temporäre Konfiguration gedacht
   // muss evtl. nochmal überdacht werden, ob das so Sinn macht.
   EEprom.qrg[0] = frequenzIdx;
   EEprom.qrg[1] = frequenzIdx;
+
+
   EEprom.CRC = 0;
 
   crc.reset();
@@ -723,6 +811,63 @@ void writeEEPROM() {
 
 }
 
+void writeEEPROMKoppler(int eeAddress ) {
+  byte i,j;
+
+  Serial.print("Schreibe EEPROM Koppler...");
+  Serial.print(" Groesse:");
+  Serial.print(sizeof(KOPPLERstruct)*KOPPLERSIZE);
+
+  //wir kopieren das KopplerArray in EEpromKoppler, weil wir die Checksumme in der Struct brauchen
+  memcpy(&EEpromKoppler.Karray,&KOPPLERarray,sizeof(KOPPLERstruct)*KOPPLERSIZE);  
+  EEpromKoppler.CRC = 0;
+
+  crc.reset();
+  crc.add((uint8_t *)&EEpromKoppler, sizeof(EEpromKoppler));
+  EEpromKoppler.CRC = crc.getCRC();
+
+  Serial.print(" CRC Koppler:");
+  Serial.println(EEpromKoppler.CRC);
+  Serial.print(" Groesse pro Koppler:");
+  Serial.println(sizeof(KOPPLERstruct));
+  
+
+  EEPROM.put(eeAddress, EEpromKoppler);
+  //EEPROM.put(eeAddress, KOPPLERarray);
+
+}
+
+void printKopplerCFG() {
+  // Ausgabe der Kopplerkonfiguration auf der seriellen Konsole
+  byte i,j;
+  struct KOPPLERstruct  koppler;
+  for(i=0;i<KOPPLERSIZE;i++) {
+    Serial.print("Koppler:");
+    Serial.print(i);
+    koppler=KOPPLERarray[i];
+    if (koppler.configured) { 
+        Serial.println(" konfiguriert");
+        Serial.print("   QRG min:");
+        Serial.print(QRGarray[koppler.minQRGidx].Text);
+        Serial.print(" Max:");
+        Serial.print(QRGarray[koppler.maxQRGidx].Text);
+        Serial.print(" Daempfung:");
+        Serial.println(koppler.attenuation);
+        Serial.println("   Stützstellen:");
+        for(j=koppler.minQRGidx;j<=koppler.maxQRGidx;j++) {
+          Serial.print("     Band:");
+          Serial.print(QRGarray[j].Text);
+          Serial.print(" Att");
+          Serial.print(koppler.sigDB[j]);
+          Serial.println("dB");
+        }
+        Serial.println("--------------------------------------");
+    }
+     else {
+        Serial.println(" NICHT konfiguriert");
+     }
+    }
+}
 
 void startTasks () {
   t.every(1000, write_raw_seriell, 0);
@@ -947,18 +1092,18 @@ byte editQRG(byte idx, byte x, byte y) {
   char outstr[21];
   byte i;
   EMPTY(outstr);
-  LCDout("    ", x, y,4);
-  LCDout(QRGarray[idx].Text, x, y,4);
+  LCDout("    ", x, y, 4);
+  LCDout(QRGarray[idx].Text, x, y, 4);
   lcd.setCursor(x, y);
   lcd.blink();;
   while (!fired) {
     if (turned && up)
-        idx < (QRGSIZE-1) ? idx++ : (idx = 0);
-      else if (turned && !up)
-        idx > 0 ? idx-- : (idx = QRGSIZE);
+      idx < (QRGSIZE - 1) ? idx++ : (idx = 0);
+    else if (turned && !up)
+      idx > 0 ? idx-- : (idx = (QRGSIZE - 1));
     if (turned) {
-      LCDout("    ", x, y,4);
-      LCDout(QRGarray[idx].Text, x, y,4);
+      LCDout("    ", x, y, 4);
+      LCDout(QRGarray[idx].Text, x, y, 4);
       turned = false;
     }
     delay(20);
@@ -978,6 +1123,7 @@ float editFloat(float inValue, byte x, byte y, byte len, byte frac, float fStep)
   LCDout(outstr, x, y, len);
   lcd.setCursor(x, y);
   lcd.blink();;
+  fired=false;
   while (!fired) {
     if (turned && up) {
       inValue += fStep;
@@ -1002,12 +1148,61 @@ float editFloat(float inValue, byte x, byte y, byte len, byte frac, float fStep)
   return inValue;
 }
 
+byte chooseKoppler(byte koppler,byte x1, byte y1,byte x2, byte y2) {
+ char outstr[21];
+ byte i;
+ byte idx;
+ byte qrgIdx;
+ byte count;
+  lcd.setCursor(x1, y1);
+ lcd.cursor();
+ lcd.blink();
+  while (!fired) {
+         
+          if (turned && up)
+            koppler < (KOPPLERSIZE - 1) ? koppler++ : (koppler = 0);
+          else if (turned && !up)
+            koppler > 0 ? koppler-- : (koppler = (KOPPLERSIZE - 1));
+          // wir koennen nur konfigurierte Koppler wahelen, die konfiguriert sind
+          while(!KOPPLERarray[koppler].configured) {
+            koppler < (KOPPLERSIZE - 1) ? koppler++ : (koppler = 0);
+            if (count>KOPPLERSIZE) { // da gibts keinen Koppler
+                return;
+            }
+          }
+          turned = false;
+          EMPTY(outstr);
+          itoa(koppler, outstr, 10);       
+          LCDout(outstr, x1, y1, 1);
+          EMPTY(outstr);
+          dtostrf(KOPPLERarray[koppler].attenuation, 4, 1, outstr);
+          strcat(outstr,"dB ");
+          LCDout(outstr, x1+2,y1,7);
+          LCDout("        ", x2, y2, 8);
+          EMPTY(outstr);
+          qrgIdx=KOPPLERarray[koppler].minQRGidx;
+          strcat(outstr,QRGarray[koppler].Text);
+          strcat(outstr,"/");
+          qrgIdx=KOPPLERarray[idx].maxQRGidx;
+          strcat(outstr,QRGarray[qrgIdx].Text);
+          LCDout(outstr, x2, y2, 19);
+          lcd.setCursor(x1, y1);
+          while(!fired && !turned);
+  }  
+   lcd.noCursor();
+        lcd.noBlink();      
+  fired=false;
+  return koppler;
+
+}
 void configureInput(byte kanal) {
   char outstr[21];
   byte i;
   byte pos = 1;
   byte oldPos = 0;
   const byte mSize = 3;
+  byte idx;
+  byte qrgIdx;
   lcd.clear();
   EMPTY(outstr);
   strcpy(outstr, "Konf. Kanal");
@@ -1020,12 +1215,25 @@ void configureInput(byte kanal) {
   dtostrf(EEprom.attKanal[kanal - 1], 4, 1, outstr);
   LCDout(outstr, 13, 1, 5);
   LCDout("dB", 18, 1, 3);
-  LCDout("Koppel Att:", 0, 2, 13);
+  LCDout("Koppel No:", 0, 2, 10);
   EMPTY(outstr);
-  dtostrf(EEprom.attKoppler[kanal - 1], 4, 1, outstr);
-  LCDout(outstr, 13, 2, 5);
-  LCDout("dB", 18, 2, 3);
-  LCDout("<EXIT>", 0, 3, 10);
+  idx=EEprom.idxKoppler[kanal-1];
+  itoa(idx,outstr,10);
+  //dtostrf(EEprom.attKoppler[kanal - 1], 4, 1, outstr);
+  LCDout(outstr, 10, 2, 5);
+  //LCDout("dB", 18, 2, 3);
+  LCDout("<EXIT>", 13, 3, 6);
+  EMPTY(outstr);
+  dtostrf(KOPPLERarray[idx].attenuation, 4, 1, outstr);
+  strcat(outstr,"dB ");
+  LCDout(outstr, 13, 2,8 );
+  EMPTY(outstr);
+  qrgIdx=KOPPLERarray[idx].minQRGidx;
+  strcat(outstr,QRGarray[qrgIdx].Text);
+  strcat(outstr,"/");
+   qrgIdx=KOPPLERarray[idx].maxQRGidx;
+  strcat(outstr,QRGarray[qrgIdx].Text);
+  LCDout(outstr, 0, 3, 19);
   oldPos = 1;
   LCDout("<", 12, pos, 1);
   while (1) {
@@ -1047,8 +1255,9 @@ void configureInput(byte kanal) {
       if (pos == 1) { // wir aendern die Eingangsdaempfung
         EEprom.attKanal[kanal - 1] = editFloat(EEprom.attKanal[kanal - 1], 13, 1, 4, 1, 0.1);
       }
-      else if (pos == 2) {
-        EEprom.attKoppler[kanal - 1] = editFloat(EEprom.attKoppler[kanal - 1], 13, 2, 4, 1, 0.1);
+      else if (pos == 2) { // Auswahl des Kopplers
+        EEprom.idxKoppler[kanal-1]=chooseKoppler(idx,10,2,0,3);
+        //EEprom.attKoppler[kanal - 1] = editFloat(EEprom.attKoppler[kanal - 1], 13, 2, 4, 1, 0.1);
       }
       else if (pos == 3) {
         lcd.noCursor();
@@ -1062,22 +1271,292 @@ void configureInput(byte kanal) {
 
 }
 
+void refreshKoppler(byte koppler) {
+  // Ausgabe der Kopplerdaten
+  boolean configured = false;
+  char outstr[21];
+  byte i;
+  byte minIdx, maxIdx;
+
+  LCDout("Koppler:", 0, 0, 8);
+  EMPTY(outstr);
+  itoa(koppler, outstr, 10);
+  LCDout(outstr, 9, 0, 8);
+  LCDout("Min:", 0, 1, 4);
+  LCDout("Max:", 10, 1, 4);
+  LCDout("Daempfung:", 0, 2, 10);
+  LCDout("EXIT  EDIT  DEL", 0, 3, 20);
+  configured = KOPPLERarray[koppler].configured;
+
+  if (configured) { // den haben wir konfiguriert
+    LCDout("[konf.]  ", 11, 0, 9);
+    minIdx = KOPPLERarray[koppler].minQRGidx;
+    maxIdx = KOPPLERarray[koppler].maxQRGidx;
+    LCDout(QRGarray[minIdx].Text, 5, 1, 4);
+    LCDout(QRGarray[maxIdx].Text, 14, 1, 4);
+    EMPTY(outstr);
+    dtostrf(KOPPLERarray[koppler].attenuation, 4, 1, outstr);
+    LCDout(outstr, 10, 2, 4);
+    LCDout("dB", 14, 2, 2);
+  }
+  else {
+    LCDout("[NO konf].", 11, 0, 9);
+    LCDout("    ", 5, 1, 4);
+    LCDout("    ", 14, 1, 14);
+    LCDout("      ", 10, 2, 6);
+  }
+}
+
+void refreshPosition(byte edtPos) {
+  switch (edtPos) {
+    case 0:
+      LCDout("<", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 18, 2, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout(" ", 17, 3, 1);
+      break;
+    case 1:
+      LCDout(" ", 9, 1, 1);
+      LCDout("<", 19, 1, 1);
+      LCDout(" ", 18, 2, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout(" ", 11, 3, 1);
+      LCDout(" ", 17, 3, 1);
+      break;
+    case 2:
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout("<", 18, 2, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout(" ", 11, 3, 1);
+      LCDout(" ", 17, 3, 1);
+      break;
+    case 3:
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 18, 2, 1);
+      LCDout("<", 5, 3, 1);
+      LCDout(" ", 11, 3, 1);
+      LCDout(" ", 17, 3, 1);
+      break;
+    case 4:
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 18, 2, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout("<", 11, 3, 1);
+      LCDout(" ", 17, 3, 1);
+      break;
+    case 5:
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 18, 2, 1);
+      LCDout(" ", 5, 3, 1);
+      LCDout(" ", 11, 3, 1);
+      LCDout("<", 17, 3, 1);
+      break;
+  }
+}
+
+
+void editStuetzstellen(byte koppler) {
+  // Pflege der Stuetzstellen im globalen StructArray
+  byte i;
+  char outstr[21];
+  byte minIdx;
+  byte maxIdx;
+  byte idx;
+  boolean exitIT = false;
+  float att;
+
+  lcd.clear();
+  LCDout("EDIT Koppler:", 0, 0, 14);
+  EMPTY(outstr);
+  itoa(koppler, outstr, 10);
+  LCDout(outstr, 15, 0, 2);
+  LCDout("Min:", 0, 1, 4);
+  LCDout("Max:", 10, 1, 4);
+  LCDout("<SAVE>", 7, 3, 6);
+  minIdx = KOPPLERarray[koppler].minQRGidx;
+  maxIdx = KOPPLERarray[koppler].maxQRGidx;
+  LCDout(QRGarray[minIdx].Text, 5, 1, 4);
+  LCDout(QRGarray[maxIdx].Text, 14, 1, 4);
+  //KOPPLERarray[koppler].sigDB[i]=KOPPLERarray[koppler].attenuation;
+  idx = minIdx;
+  fired=false;
+  turned=false;
+  while (idx <= maxIdx) {
+    LCDout("    ", 0, 2, 4);
+    LCDout(QRGarray[idx].Text, 0, 2, 4);
+    LCDout(":", 4, 2, 1);
+    EMPTY(outstr);
+    att = KOPPLERarray[koppler].sigDB[idx];
+    dtostrf(att, 4, 1, outstr);
+    LCDout(outstr, 7, 2, 4);
+    LCDout("dB", 12, 2, 2);
+    if (!exitIT) { 
+      LCDout("<<", 15, 2, 2);
+      LCDout("        ", 6, 3, 8);
+      LCDout("<SAVE>", 7, 3, 6);
+    }
+    while(!turned && !fired) {} ;
+    if (fired && exitIT) {
+        fired=false;
+        lcd.clear();
+        return;
+    }
+     if (fired) {
+      KOPPLERarray[koppler].sigDB[idx] = editFloat(att, 7, 2, 4, 1, 0.1);
+      fired=false;
+    }
+    if (turned && exitIT) {
+        //Save wieder verlassen
+        exitIT=false;
+        idx=maxIdx;
+        turned=false;
+    }
+    if (turned && up && (idx < maxIdx)) 
+        idx++;
+    else if (turned && !up && (idx > minIdx ) )
+       idx--;
+    else if( turned && up && (idx == maxIdx)) { // Sonderbehandlung, wir springen auf SAVE
+      LCDout("  ", 15, 2, 2);
+      LCDout("<<SAVE>>", 6, 3, 8);
+      exitIT=true;
+    }
+    turned = false;
+   
+  }
+
+}
 void configureKoppler() {
   char outstr[21];
   byte i;
-  lcd.clear();
-  EMPTY(outstr);
-  strcpy(outstr, "Konf. Koppler");
-  LCDout(outstr, 0, 0, 18);
-  EMPTY(outstr);
-  strcpy(outstr, "Folgt spaeter ...");
-  LCDout(outstr, 0, 1, 18);
-  //itoa(kanal, outstr, 10);
-  //LCDout(outstr, 19, 0, 1);
-  while (!fired) {};
-  fired = 0;
+  byte koppler = 0;
+  byte minIdx, maxIdx;
+  boolean exit = false;
+  byte edtPos = 0;
+  byte edtMax = 5;
+  boolean configured = false;
+  boolean exitIT = false;
+  float Att = 0.0;
+  boolean edit2 = false;
+  kStates state = SELECT;
 
-}
+  /*enum kStates {
+    SELECT,
+    CONF,
+    EDIT,
+    EXIT,
+    DEL,
+    };
+  */
+
+  lcd.clear();
+  fired = false;
+  turned = false;
+  while (!exitIT) {
+    switch (state) {
+      case SELECT:    //Auswahl des Kopplers
+        while (!fired) {
+          refreshKoppler(koppler);
+          if (turned && up)
+            koppler < (KOPPLERSIZE - 1) ? koppler++ : (koppler = 0);
+          else if (turned && !up)
+            koppler > 0 ? koppler-- : (koppler = (KOPPLERSIZE - 1));
+          turned = false;
+        }
+        fired = 0;
+        state = CONF;
+        edtPos = 0;
+        break;
+      case CONF:    // Konfiguration des Kopplers
+        while (!fired) {
+          refreshPosition(edtPos); // Pfeil < an die richtige Position setzen
+          if (turned && up)
+            edtPos < edtMax ? edtPos++ : (edtPos = 0);
+          else if (turned && !up)
+            edtPos > 0 ? edtPos-- : (edtPos = edtMax);
+          turned = false;
+        }
+        fired = false;
+        configured = KOPPLERarray[koppler].configured;
+        switch (edtPos) {
+          case 0:       // Min QRG
+            minIdx = KOPPLERarray[koppler].minQRGidx;
+            if (!configured) {
+              minIdx = 0; //
+              KOPPLERarray[koppler].maxQRGidx = QRGSIZE - 1;
+              KOPPLERarray[koppler].attenuation = 0.0;
+
+            }
+            KOPPLERarray[koppler].minQRGidx = editQRG(minIdx, 5, 1);
+            KOPPLERarray[koppler].configured = true; // nun ist er konfiguriert, Werte auch anzeigen
+            // wir springen direkt in den Edit Modus der Max Frequenz
+            edtPos = 1;
+            fired = true;
+            break;
+          case 1:     // Max QRG
+            maxIdx = KOPPLERarray[koppler].maxQRGidx;
+            if (!configured) {
+              minIdx = 0; //
+              KOPPLERarray[koppler].minQRGidx = 0;
+              KOPPLERarray[koppler].attenuation = 0.0;
+            }
+            KOPPLERarray[koppler].maxQRGidx = editQRG(maxIdx, 14, 1);
+            KOPPLERarray[koppler].configured = true; // nun ist er konfiguriert, Werte auch anzeigen
+            // wir springen direkt in den Edit Modus der Attenuation
+            edtPos = 2;
+            fired = true;
+            break;
+          case 2:     // Att
+            Att = KOPPLERarray[koppler].attenuation;
+            if (!configured) {
+              Att = 0.0; //
+              KOPPLERarray[koppler].minQRGidx = 0;
+              KOPPLERarray[koppler].maxQRGidx = QRGSIZE - 1;
+            }
+            KOPPLERarray[koppler].attenuation = editFloat(Att, 10, 2, 4, 1, 0.5);
+            //if (!configured) {
+              // nun fuellen wir das sigDB Array mit dem konfigurierten Wert
+              for (i = 0; i < QRGSIZE; i++)
+                KOPPLERarray[koppler].sigDB[i] = KOPPLERarray[koppler].attenuation;
+            //}
+            KOPPLERarray[koppler].configured = true; // nun ist er konfiguriert, Werte auch anzeigen
+
+            edtPos < edtMax ? edtPos++ : (edtPos = 0); //eine Position weiterspringen, wenn raus aus dem Edit
+            break;
+          case 3:     // Exit
+            state = SELECT; // zureuck zur Kopplerauswahl
+            exitIT = true;
+            break;
+          case 4:     // Edit
+            state = EDIT;
+            edtPos < edtMax ? edtPos++ : (edtPos = 0); //eine Position weiterspringen, wenn raus aus dem Edit
+            break;
+          case 5:     // Del
+            KOPPLERarray[koppler].configured = false;
+            state = SELECT; // zureuck zur Kopplerauswahl
+            break;
+        }
+        refreshKoppler(koppler);
+        break;
+      case EDIT :  // Edit der Stützstellen
+        //sigDB ist Array von float
+        editStuetzstellen(koppler);
+        refreshKoppler(koppler);
+        state = SELECT;
+        break;
+
+    } //switch state
+  } //while (außen)
+
+} //configureKoppler
+
+
+
 
 void take_ads()
 {
@@ -1434,6 +1913,66 @@ void screen2( float U1, float U2, float Att1, float Att2, char *QRGtext1, char *
 
 }
 
+//screen3(U1lin + AttKanal1, U2lin + AttKanal2, EEprom.idxKoppler[0], EEpromidxKoppler[1], QRGarray[QRGidx1].Text, QRGarray[QRGidx2].Text);
+void screen3( float U1, float U2, float dbK1, float dbK2, char *QRGtext1, char *QRGtext2) {
+  float PmW1_out = 0;
+  float PmW1 = 0;
+  float PmW2_out = 0;
+  float PmW2 = 0;
+  char outstr[30];
+  int i;
+  byte mb1 = 4;
+  byte mb2 = 4;
+  
+
+  PmW1 = pow(10, U1 / 10.0);
+  PmW2 = pow(10, U2 / 10.0);
+  mb1 = MBselect(PmW1);
+  mb1 = MBselect(PmW1);
+  resetCursor();
+  EMPTY(outstr);
+
+  PmW1_out = PmW1 / MBwahl[mb1].Divisor;
+  PmW2_out = PmW2 / MBwahl[mb2].Divisor;
+
+  EMPTY(outstr);
+  // wir zeigen U an, --> Ulin + Eingangsdaempfung
+  dtostrf(U1, 4, 1, outstr);
+  strcat(outstr, "dBm ");
+  LCDout(outstr, 0, 0, 8);
+  EMPTY(outstr);
+  dtostrf(U2, 4, 1, outstr);
+  strcat(outstr, "dBm ");
+  LCDout(outstr, 10, 0, 8);
+  EMPTY(outstr);
+  dtostrf(PmW1_out, 5, MBwahl[mb1].Nachkomma, outstr);
+  strcat(outstr, MBwahl[mb1].Unit);
+  LCDout(outstr, 0, 1, 8);
+  EMPTY(outstr);
+  dtostrf(PmW2_out, 5, MBwahl[mb2].Nachkomma, outstr);
+  strcat(outstr, MBwahl[mb2].Unit);
+  LCDout(outstr, 10, 1, 8);
+  LCDout("QRG:", 0, 2, 4);
+  EMPTY(outstr);
+  strcat(outstr, QRGtext1);
+  LCDout(outstr, 4, 2, 6);
+  LCDout("QRG:", 10, 2, 4);
+  EMPTY(outstr);
+  strcat(outstr, QRGtext2);
+  LCDout(outstr, 14, 2, 6);
+  EMPTY(outstr);
+  LCDout("K:", 0, 3, 2);
+  dtostrf(dbK1, 4, 1, outstr);
+  LCDout(outstr, 2, 3, 4);
+  LCDout("dB", 6, 3, 4);
+  EMPTY(outstr);
+  LCDout("K:", 10, 3, 2);
+  dtostrf(dbK2, 4, 1, outstr);
+  LCDout(outstr, 12, 3, 4);
+  LCDout("dB", 16, 3, 4);
+
+}
+
 void showMenu() {
 
   //EMPTY(outstr);
@@ -1485,8 +2024,13 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   float VSWR = 1.0;
   float P1mW_out = 0;
   float P2mW_out = 0;
+  float dbK1;
+  float dbK2;
   float U1lin = 0;
   float U2lin = 0;
+  char outstr[21];
+  char outstr1[21];
+  byte i;
 
   //String outstr;
   //static float old_U1 = 0.0;
@@ -1537,12 +2081,18 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
     case DUAL:
       screen2(U1lin + AttKanal1, U2lin + AttKanal2, AttKanal1, AttKanal2, QRGarray[QRGidx1].Text, QRGarray[QRGidx2].Text);
       break;
+    case DUALKOPPLER:
+      dbK1=KOPPLERarray[EEprom.idxKoppler[0]].sigDB[QRGidx1];
+      dbK2=KOPPLERarray[EEprom.idxKoppler[1]].sigDB[QRGidx2];
+      screen3(U1lin + AttKanal1+dbK1, U2lin + AttKanal2+dbK2,dbK1 , dbK2, QRGarray[QRGidx1].Text, QRGarray[QRGidx2].Text);
+      break;
     case MENU:
       showMenu();
       break;
     case DUALCFG:
       configureDUAL();
       screen2(U1lin + AttKanal1, U2lin + AttKanal2, AttKanal1, AttKanal2, QRGarray[QRGidx1].Text, QRGarray[QRGidx2].Text);
+      
       break;
   }
   refresh = false;
@@ -1613,9 +2163,9 @@ byte MB_Wahl(byte kanal, float PmW) {
 
 
 void resetCursor() { //um den Cursor im Edit-Mode nach Anzeige des Status wieder an die richtige Stelle zu setzen!
-  if (item_pos == 1) lcd.setCursor(3, 2);
-  if (item_pos == 2) lcd.setCursor(12, 2);
-  if (item_pos == 3) lcd.setCursor(18, 2);
+ // if (item_pos == 1) lcd.setCursor(3, 2);
+//  if (item_pos == 2) lcd.setCursor(12, 2);
+//  if (item_pos == 3) lcd.setCursor(18, 2);
 
 }
 
