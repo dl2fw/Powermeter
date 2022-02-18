@@ -84,7 +84,8 @@
 
 
 #define PINA_INT  FALLING
-#define PUSHB_INT FALLING
+#define PUSHB_INT CHANGE
+//#define PUSHB_INT FALLING
 
 #define ATT_KOPPLER1 50
 #define ATT_KOPPLER2 30
@@ -187,7 +188,12 @@ enum kStates {
   DEL,
 };
 
-
+enum calStates {
+  ATT,
+  LEVEL,
+  START,
+  BREAK,
+};
 
 // Startmeldungen
 #define START1 "   PowerMeter"
@@ -231,6 +237,7 @@ struct MBStruct {
 struct EEStruct {
   float scalFactor[2];  // Skalierung der beiden Kanaäle
   float attKanal[2];    //Daempfungskonstatnte pro Kanal
+  float intAttKanal[2];    //Daempfungskonstatnte pro Kanal
   byte idxKoppler[2];  // Richtkoppler Auskopplung
   byte qrg[2];          // Messfrewuenzen pro Kanal
   byte SWRqrg;          // Messfrequenz für die SWR Messung
@@ -275,6 +282,8 @@ mStates CFGstate = FRQ;
 
 int posi = 0;
 
+int longFired = 0; //ms, die die Taste schon gedrueckt ist
+unsigned long oldLongFired = 0;
 
 byte MB[2]; //Messbereich
 unsigned long MBtime[2]; // Dauer im Messbereich fuer Auswahl
@@ -306,6 +315,7 @@ byte QRGidx2 = 0;
 
 volatile boolean turned;   // rotary was turned
 volatile boolean fired;    // knob was pushed
+volatile boolean released;    // knob was released
 volatile boolean up;       // true when turned cw
 
 //#########################################################
@@ -348,13 +358,16 @@ LcdBarGraph lbgPWR(&lcd, 13, 0, 3); // 13 Zeichen, Start (0,3)
 // Interrupt Service Routine - für den Button des Encoder
 void isrB ()
 {
-  if (!digitalRead (PUSHB))
+  if (!digitalRead (PUSHB)) {
     fired = true;
-#ifdef DEBUG
-  Serial.println("Button Pushed");
-#endif
-}  // end of isr
-
+    released=false;
+  }
+  else {
+    longFired = 0;
+    oldLongFired = 0;
+    released=true;
+  }  // end of isr
+}
 
 // Interrupt Service Routine für die Drehbewegung
 void isr ()
@@ -369,6 +382,23 @@ void isr ()
   turned = true;
 }  // end of isr
 
+/*
+ * Long Press Auswertung.
+ * longFired enthaelt die Zeit in s. die die Taste gedrueckt wurde
+ * (geht nicht in IRQ wegen millis() )
+ */
+void checkButton() {
+  if (fired) {
+    if (!oldLongFired)
+      oldLongFired = millis();
+    else
+      longFired = (millis() - oldLongFired) / 1000;
+  }
+  else { // da hat schon jemand den fired abgegriffen, also Zeiten loeschen
+    longFired = 0;
+    oldLongFired = 0;
+  }
+}
 
 /*
    Hauptasuwertung, ob der Encoder gedreht wurde oder die Taste gedrückt wurde
@@ -378,10 +408,10 @@ void isr ()
 */
 
 void check_encoder() {
+
   // wenn keine Taste gedrueckt wurde und nicht gedreht wurde, haben wir nichts zu tun
   if (!fired && !turned)
     return;
-
   switch (menuState) { // wir schauen, in welchem Status wir uns befiunden. Hier nutzen wir ein enum der besseren Lesbarkeit.
     case SWR:  // Hauptschirm
       if (fired) { // Taste wurde gedrueckt
@@ -442,7 +472,8 @@ void check_encoder() {
         menuState = DUAL;
         screenNo = 0;
       }
-      if (fired) {
+      if (fired && (longFired>2)) { //3 sec druecken
+        
         fired = false;
         stopTasks();
         calibration(1, &scalFactor1, PIN_A1, AttKanal1);
@@ -462,7 +493,7 @@ void check_encoder() {
         menuState = IN1;
         screenNo = 1;
       }
-      if (fired) {
+      if (fired && (longFired>2)) { //3s druecken
         fired = false;
         stopTasks();
         calibration(2, &scalFactor2, PIN_A2, AttKanal2);
@@ -553,7 +584,6 @@ void check_encoder() {
       //Serial.print("Conf-Menu menuPos:");
       //Serial.println(menuPos);
       if (fired) {
-        // Serial.println("Fired!");;
         stopTasks();
         fired = false;
         switch (menuPos) {
@@ -600,7 +630,7 @@ void check_encoder() {
       break;
   }
   turned = false;
-  fired =  false;
+  //fired =  false;
   return;
 }
 
@@ -734,8 +764,10 @@ void setup() {
     lcd.print("EEPROM leer, init..");
     EEprom.calibrated[0] = false;
     EEprom.calibrated[1] = false;
+    EEprom.intAttKanal[0] = 0.0;
+    EEprom.intAttKanal[1] = 0.0;
     writeEEPROM();
-// Nach Schreiben und wieder einlesen des EEPROM sollte die Checksumme stimmen, wenn nicht, haben wir ein Problem
+    // Nach Schreiben und wieder einlesen des EEPROM sollte die Checksumme stimmen, wenn nicht, haben wir ein Problem
     if (!readEEPROM()) {
       lcd.setCursor(0, 3);
       lcd.print("EEPROM ERROR!!!   ");
@@ -752,7 +784,7 @@ void setup() {
     lcd.setCursor(0, 3);
     lcd.print("EEPROM Kopplerinit..");
     writeEEPROMKoppler(EEPROM_K_ADDR);
-// Konsistenzprüfung nach initalem anlegen
+    // Konsistenzprüfung nach initalem anlegen
     if (!readEEPROMKoppler(EEPROM_K_ADDR)) {
       lcd.setCursor(0, 3);
       lcd.print("EEPROM Koppler ERROR");
@@ -780,6 +812,12 @@ void setup() {
     Serial.println("Kanal 2 unkalbibiert");
     waitFired = true;
   }
+  if (!countKoppler()) {
+    lcd.setCursor(0, 2);
+    lcd.print("Keine Koppler def.");
+    Serial.println("Keine Koppler def.");
+    waitFired = true;
+  }
   if (waitFired) {
     lcd.setCursor(0, 3);
     lcd.print("Taste druecken");
@@ -792,9 +830,9 @@ void setup() {
 
 
 /*
- * Arduino Hauptschleife lässt allen die Taskverarbeitung machen
- * 
- */
+   Arduino Hauptschleife lässt allen die Taskverarbeitung machen
+
+*/
 void loop()
 {
 
@@ -803,9 +841,9 @@ void loop()
 }
 
 /*
- * Lese EEPROM für Einstellungen (außer Koppler)
- * Es wird ab Adresse 0 gelesen. Die Koppler fangen bei 100 (siehe #define) an, man kann hier die Struct auch nich erweitern
- */
+   Lese EEPROM für Einstellungen (außer Koppler)
+   Es wird ab Adresse 0 gelesen. Die Koppler fangen bei 100 (siehe #define) an, man kann hier die Struct auch nich erweitern
+*/
 
 boolean readEEPROM() {
   byte checkCRC = 0;
@@ -844,11 +882,11 @@ boolean readEEPROM() {
   }
 }
 
-/* 
- *  Lesen der Koppler
- *  Adresse wird mit übergeben und im #define definiert
- *  Koppler werden über memcpy in die Struct kopiert
- */
+/*
+    Lesen der Koppler
+    Adresse wird mit übergeben und im #define definiert
+    Koppler werden über memcpy in die Struct kopiert
+*/
 
 boolean readEEPROMKoppler(int eeAddress) {
   byte checkCRC = 0;
@@ -940,9 +978,9 @@ void writeEEPROMKoppler(int eeAddress ) {
 }
 
 /*
- * Ausgabe der Kopplerkofniguration auf der seriellen Konsole
- * Dient der Kontrolle, ob alle Stützstellen richtig definiert sind
- */
+   Ausgabe der Kopplerkofniguration auf der seriellen Konsole
+   Dient der Kontrolle, ob alle Stützstellen richtig definiert sind
+*/
 
 void printKopplerCFG() {
   // Ausgabe der Kopplerkonfiguration auf der seriellen Konsole
@@ -977,14 +1015,15 @@ void printKopplerCFG() {
 }
 
 /*
- * Taskhandling Start und Stop
- */
- 
+   Taskhandling Start und Stop
+*/
+
 void startTasks () {
   t.every(1000, write_raw_seriell, 0);
   t.every(10, take_ads, 0); //lese die analogen Eingänge alle 10ms und glätte diese
   t.every(100, write_lcd, 0); //alle 500ms auf LCD darstellen
   t.every(50, check_encoder, 0); // alle 20ms Änderungen des Encoders detektieren
+  t.every(100, checkButton, 0);
 }
 
 void stopTasks() {
@@ -992,13 +1031,14 @@ void stopTasks() {
   t.stop(take_ads);
   t.stop(write_lcd);
   t.stop(check_encoder);
+  t.stop(checkButton);
 }
 
 /*
- * Routine zur Auswahl der Frequenz
- * Ausgabewerte sind auf den screen angepasst und hard kodiert hier verwendet
- */
- 
+   Routine zur Auswahl der Frequenz
+   Ausgabewerte sind auf den screen angepasst und hard kodiert hier verwendet
+*/
+
 byte chooseQRG(byte idx) {
   // Frequenzauswahl mit Encoder, Werte aus dem Array QRGarray
   byte qrgIdx = 0;
@@ -1057,12 +1097,49 @@ byte chooseQRG(byte idx) {
   turned = false;
 }
 
+void refreshCalPosition(byte edtPos) {
+  switch (edtPos) {
+    case 0:
+      LCDout("<", 17 , 1, 1);
+      LCDout(" ", 17, 2, 1);
+      LCDout(" ", 0, 3, 1);
+      LCDout(" ", 8, 3, 1);
+      LCDout(" ", 9, 3, 1);
+      LCDout(" ", 16, 3, 1);
+      break;
+    case 1:
+      LCDout(" ", 17, 1, 1);
+      LCDout("<", 17, 2, 1);
+      LCDout(" ", 0, 3, 1);
+      LCDout(" ", 8, 3, 1);
+      LCDout(" ", 9, 3, 1);
+      LCDout(" ", 16, 3, 1);
+      break;
+    case 2:
+      LCDout(" ", 17 , 1, 1);
+      LCDout(" ", 17, 2, 1);
+      LCDout("<", 0, 3, 1);
+      LCDout(">", 8, 3, 1);
+      LCDout(" ", 9, 3, 1);
+      LCDout(" ", 16, 3, 1);
+      break;
+    case 3:
+      LCDout(" ", 17 , 1, 1);
+      LCDout(" ", 17, 2, 1);
+      LCDout(" ", 0, 3, 1);
+      LCDout(" ", 8, 3, 1);
+      LCDout("<", 9, 3, 1);
+      LCDout(">", 16, 3, 1);
+      break;
+  }
+}
+
 /* Kalbierungsroutine
- *  Es wird anhand eines Kalibireungssignal der Saklierungsfaktor berechnet
- *  Die Engangsdaempfung eines Kanals, die konfiguriert wurde, wird entsprechend mit berücksichtigt
- *  Es werden 5 Stufen druchlaufen und dabei der Glättungsfaktor immer kleiner gesachaltet
- *  Die Durchläufe wurden emprisch ermittelt
- */
+    Es wird anhand eines Kalibireungssignal der Saklierungsfaktor berechnet
+    Die Engangsdaempfung eines Kanals, die konfiguriert wurde, wird entsprechend mit berücksichtigt
+    Es werden 5 Stufen druchlaufen und dabei der Glättungsfaktor immer kleiner gesachaltet
+    Die Durchläufe wurden emprisch ermittelt
+*/
 
 void calibration(byte kanal, float * scalFactor, byte pin, float Att) {
   // Kalibrierung des Kanals bei limM0[CALIBRATE]
@@ -1076,6 +1153,11 @@ void calibration(byte kanal, float * scalFactor, byte pin, float Att) {
   float smooth = 0.1;
   boolean ready = false;
   byte stage = 1;
+  boolean exitIT = false;
+  byte edtPos = 0;
+  const byte edtMax = 3;
+  float dB = linM0[CALIBRATE].dB;
+  float att = EEprom.intAttKanal[kanal - 1];
 
 
   // Tasks anhalten, wir machen hier alles selsbt
@@ -1089,29 +1171,67 @@ void calibration(byte kanal, float * scalFactor, byte pin, float Att) {
   itoa(kanal, outstr, 10);
   LCDout(outstr, 19, 0, 1);
   EMPTY(outstr);
-  LCDout("P:", 0, 1, 6);
-  dtostrf(dbM + Att, 5, 1, outstr);
-  LCDout(outstr, 2, 1, 5);
-  LCDout("dBm", 7, 1, 3);
-  if (Att > 0) {
-    LCDout("Att:", 11, 1, 3);
-    EMPTY(outstr);
-    dtostrf(Att, 4, 1, outstr);
-    LCDout(outstr, 15, 1, 4);
-  }
+  LCDout("Int. Att:", 0, 1, 10);
+  dtostrf(EEprom.intAttKanal[kanal - 1], 5, 1, outstr);
+  LCDout(outstr, 9, 1, 5);
+  LCDout("dB", 14, 1, 2);
   EMPTY(outstr);
-  LCDout("Bitte Signal ...", 0, 2, 19);
-  LCDout("Taste druecken", 0, 3, 19);
-  while (!fired && !turned) { }
-  if (turned) {
+
+  LCDout("Pegel:", 0, 2, 6);
+  dtostrf(linM0[CALIBRATE].dB, 5, 1, outstr);
+  LCDout(outstr, 9, 2, 5);
+  LCDout("dBm", 14, 2, 3);
+  LCDout("<START>  <EXIT>", 1, 3, 16);
+  // Kalibrierungsmenü
+  while (!exitIT) {
+    refreshCalPosition(edtPos);
+    switch (edtPos) {
+      case 0: // Daempfung
+        if (fired)
+          att = editFloat(EEprom.intAttKanal[kanal - 1], 9, 1, 4, 1, 5);
+        break;
+      case 1: //Pegel
+        if (fired)
+          dB = editFloat(EEprom.intAttKanal[kanal - 1], 9, 2, 4, 1, 5);
+        break;
+      case 2: //Start
+        if (fired) {
+          fired = false;
+          exitIT = true;
+          EEprom.intAttKanal[kanal - 1] = att;
+        }
+        break;
+      case 3:  //Exit
+        if (fired) {
+          fired = false;
+          return;
+        }
+        break;
+    }
+    fired = false;
+    while (!exitIT && !fired && !turned);
+    if (turned && up)
+      edtPos < edtMax ? edtPos++ : (edtPos = 0);
+    else if (turned && !up)
+      edtPos > 0 ? edtPos-- : (edtPos = edtMax);
     turned = false;
-    LCDout("                ", 0, 2, 19);
-    LCDout("              ", 0, 3, 19);
-    LCDout("Abbruch...", 0, 3, 17);
-    delay(1000);
-    //startTasks();
-    return;
   }
+  fired = false;
+
+  EMPTY(outstr);
+  //lcd.clear();
+  LCDout("Bitte Signal ...", 0, 2, 19);
+  LCDout("Ext. Pegel:", 0, 1, 12);
+  dtostrf(dB, 4, 1, outstr);
+  LCDout(outstr, 12, 1, 5);
+  LCDout("dBm", 17, 2, 3);
+  Serial.print("Kalibrieung: ATT:");
+  Serial.print(EEprom.intAttKanal[kanal - 1]);
+  Serial.print("  Pegel:");
+  Serial.println(dB);
+  ref = linearizeDB(dB - EEprom.intAttKanal[kanal - 1], linM0, sizeof(linM0) / sizeof(struct LinStruct));
+  Serial.print("Kalibrieung: Ref Stuetzstelle :");
+  Serial.println(ref);
   // wir warten auf ein Signal
   // wir gehen von einen Skalierungsbereich von 0.5-1.5 aus
   rawU = (float)analogRead(pin);
@@ -1128,7 +1248,7 @@ void calibration(byte kanal, float * scalFactor, byte pin, float Att) {
   }
 
   fired = false;
-  LCDout("      ", 13, 1, 7);
+  LCDout("     Stufe:         ", 0, 1, 20);
   LCDout("                ", 0, 2, 19);
   LCDout("              ", 0, 3, 19);
   LCDout("Ref:", 0, 2, 4);
@@ -1156,7 +1276,7 @@ void calibration(byte kanal, float * scalFactor, byte pin, float Att) {
     EMPTY(outstr);
     LCDout("AK:", 11, 3, 3);
     itoa(mp, outstr, 10);
-    LCDout(outstr, 15, 3, 4);
+    LCDout(outstr, 14, 3, 4);
     EMPTY(outstr);
     dtostrf(*scalFactor, 5, 3, outstr);
     LCDout(outstr, 5, 3, 5);
@@ -1212,11 +1332,11 @@ void calibration(byte kanal, float * scalFactor, byte pin, float Att) {
 
 }
 
-/* 
- *  Auswahl der Frequenz.
- *  Da dies öfters benötigt wird, gibt man x und y an, um die Position auf dem Screen mitzugeben
- *  Es werden die bandinfos aus der Struct ausgegeben, zurück wird der gewählte Indes geliefert
- */
+/*
+    Auswahl der Frequenz.
+    Da dies öfters benötigt wird, gibt man x und y an, um die Position auf dem Screen mitzugeben
+    Es werden die bandinfos aus der Struct ausgegeben, zurück wird der gewählte Indes geliefert
+*/
 byte editQRG(byte idx, byte x, byte y) {
   char outstr[21];
   byte i;
@@ -1245,12 +1365,12 @@ byte editQRG(byte idx, byte x, byte y) {
 }
 
 /*
- * Editierung von Float werden
- * Wurde ausgelagert, da öfters gebraucht
- * Position über x,y
- * len, frac werden für dtostrf benötigt
- * fStep gibt die Schrteittweite an
- */
+   Editierung von Float werden
+   Wurde ausgelagert, da öfters gebraucht
+   Position über x,y
+   len, frac werden für dtostrf benötigt
+   fStep gibt die Schrteittweite an
+*/
 
 float editFloat(float inValue, byte x, byte y, byte len, byte frac, float fStep) {
   char outstr[21];
@@ -1287,10 +1407,10 @@ float editFloat(float inValue, byte x, byte y, byte len, byte frac, float fStep)
 
 
 /*
- * Auswahl des Koppler
- * x1,y1: Ausgabe der Kopplers und der Dämpfung
- * x2,y2: AusgabeminQRG/maxQRG als weiteren Hinweis
- */
+   Auswahl des Koppler
+   x1,y1: Ausgabe der Kopplers und der Dämpfung
+   x2,y2: AusgabeminQRG/maxQRG als weiteren Hinweis
+*/
 byte chooseKoppler(byte koppler, byte x1, byte y1, byte x2, byte y2) {
   char outstr[21];
   byte i;
@@ -1339,11 +1459,21 @@ byte chooseKoppler(byte koppler, byte x1, byte y1, byte x2, byte y2) {
 
 }
 
+byte countKoppler() {
+  byte i;
+  byte count = 0;
+  for (i = 0; i < KOPPLERSIZE; i++) {
+    if (KOPPLERarray[i].configured)
+      count++;
+  }
+  return count;
+}
+
 /*
- * Konfiguration des Eingangskanals
- * Kanal wird mit 1 oder 2 angegeben
- * 
- */
+   Konfiguration des Eingangskanals
+   Kanal wird mit 1 oder 2 angegeben
+
+*/
 void configureInput(byte kanal) {
   char outstr[21];
   byte i;
@@ -1352,6 +1482,9 @@ void configureInput(byte kanal) {
   const byte mSize = 3;
   byte idx;
   byte qrgIdx;
+  byte count;
+
+  count = countKoppler(); //wir zaehlen die Koppler
   lcd.clear();
   EMPTY(outstr);
   strcpy(outstr, "Konf. Kanal");
@@ -1385,6 +1518,7 @@ void configureInput(byte kanal) {
   LCDout(outstr, 0, 3, 19);
   oldPos = 1;
   LCDout("<", 12, pos, 1);
+  count = countKoppler(); //wir zaehlen die Koppler
   while (1) {
     if (turned) {
       if  (up)
@@ -1404,7 +1538,7 @@ void configureInput(byte kanal) {
       if (pos == 1) { // wir aendern die Eingangsdaempfung
         EEprom.attKanal[kanal - 1] = editFloat(EEprom.attKanal[kanal - 1], 13, 1, 4, 1, 0.1);
       }
-      else if (pos == 2) { // Auswahl des Kopplers
+      else if (pos == 2 && count) { // Auswahl des Kopplers, nur wenn Koppler definiert sind
         EEprom.idxKoppler[kanal - 1] = chooseKoppler(idx, 10, 2, 0, 3);
         //EEprom.attKoppler[kanal - 1] = editFloat(EEprom.attKoppler[kanal - 1], 13, 2, 4, 1, 0.1);
       }
@@ -1421,9 +1555,9 @@ void configureInput(byte kanal) {
 }
 
 /*
- * Refresh des Bildschirm bei der Kopplerdefinition
- * Wurde der Übersichtlichkeit ausgelagert
- */
+   Refresh des Bildschirm bei der Kopplerdefinition
+   Wurde der Übersichtlichkeit ausgelagert
+*/
 
 void refreshKoppler(byte koppler) {
   // Ausgabe der Kopplerdaten
@@ -1462,8 +1596,8 @@ void refreshKoppler(byte koppler) {
 }
 
 /*
- * Position den Cursors im SWR Menü Modus
- */
+   Position den Cursors im SWR Menü Modus
+*/
 
 void refreshPosition(byte edtPos) {
   switch (edtPos) {
@@ -1519,10 +1653,10 @@ void refreshPosition(byte edtPos) {
 }
 
 
-/* 
- *  Editierung der Stützstellen eines Kopplers
- *  
- */
+/*
+    Editierung der Stützstellen eines Kopplers
+
+*/
 
 void editStuetzstellen(byte koppler) {
   // Pflege der Stuetzstellen im globalen StructArray
@@ -1596,9 +1730,9 @@ void editStuetzstellen(byte koppler) {
 }
 
 /*
- * Konfiguration der Koppler
- * Eigenes Menüsystem 
- */
+   Konfiguration der Koppler
+   Eigenes Menüsystem
+*/
 void configureKoppler() {
   char outstr[21];
   byte i;
@@ -1725,10 +1859,10 @@ void configureKoppler() {
 
 
 /*
- * Messwerte des AD Kopplers aufnehmen
- * Das ist wegen der SWR Messung zeitkritisch
- * Deshalb zuerst beide Werte einlesen und dann die Linearisierung druchführen
- */
+   Messwerte des AD Kopplers aufnehmen
+   Das ist wegen der SWR Messung zeitkritisch
+   Deshalb zuerst beide Werte einlesen und dann die Linearisierung druchführen
+*/
 
 
 void take_ads()
@@ -1817,12 +1951,12 @@ float freq_correction(float rawU, float qrg, struct LinStruct * linM ) {
 }
 
 
-/* 
- *  Linearisierung anhand der Stützstellen
- *  Das Array und die Größe werden nicht aus der globalen Definition genutzt, sondern übergeben
- *  Das dient der Vorbereitung, um mit zwei Linearisierungs Array getrennt für beide Kanäle arbeiten zu können
- *  Wir aber zurzeit nur ein Array verwendet
- */
+/*
+    Linearisierung anhand der Stützstellen
+    Das Array und die Größe werden nicht aus der globalen Definition genutzt, sondern übergeben
+    Das dient der Vorbereitung, um mit zwei Linearisierungs Array getrennt für beide Kanäle arbeiten zu können
+    Wir aber zurzeit nur ein Array verwendet
+*/
 
 
 float linearize(float rawU, struct LinStruct * linM, byte linMsize ) {
@@ -1864,10 +1998,42 @@ float linearize(float rawU, struct LinStruct * linM, byte linMsize ) {
 #endif
   return U;
 }
+/*
+   Rueckwartslinearisierung
+   Eingabe: Pegel, Ausgabe rawU (ADnorm)
+   Dient bei der Kalibrierung zur Bestimmung des Refernzswertes
+*/
+
+float linearizeDB(float dB, struct LinStruct * linM, byte linMsize ) {
+  // Interpoliert anhand der liM Struct und gibt rawU zurueck
+  // dB: Pegel
+  // linM: Zeiger auf Array mit den Lineariserungswerten
+  // linMSize: Größe des Arries
+  byte pU = 0;
+  float U = 0.0;
+  linM = linM0;
+  //int linMsize=sizeof(linM0)/sizeof(struct LinStruct);
+  //byte linMsize=sizeof(linM0)/sizeof(LinStruct);
+
+  for (int q = 0; q < linMsize; q++) {
+    if (dB < (float) linM[q].dB) {
+      pU = q;
+      continue;
+    }
+    else if (dB == linM[q].dB) { // Treffer Stuetzstelle
+      return linM[q].ADnorm;
+    }
+  }
+
+  if (pU > (linMsize - 1))    U = linM[linMsize].ADnorm;
+  else if (pU < 1)          U = linM[0].ADnorm;
+  else                      U = ((dB - linM[pU].dB) / (linM[pU + 1].dB - linM[pU].dB)) * (linM[pU + 1].ADnorm - linM[pU].ADnorm) + linM0[pU].ADnorm;
+  return U; // Rueckgabe des interpolierten ADnorm wertes
+}
 
 /*
- * Zentrale Ausgaberoutine für Bildschirmausgaben
- */
+   Zentrale Ausgaberoutine für Bildschirmausgaben
+*/
 
 void LCDout (char *outstring, byte x, byte y, byte len) {
 
@@ -1888,14 +2054,14 @@ void LCDout (char *outstring, byte x, byte y, byte len) {
   //lcd.print(outstring);
 }
 
-/* 
- *  Hier folgen die Definitionen der verschiedenen Ausgabeformate
- *  Diese werden in write_lcd() entsprechend der in check_encoder() vorgenommenen Auswahl angesprungen
- */
+/*
+    Hier folgen die Definitionen der verschiedenen Ausgabeformate
+    Diese werden in write_lcd() entsprechend der in check_encoder() vorgenommenen Auswahl angesprungen
+*/
 
 /*
- * SWR Screen
- */
+   SWR Screen
+*/
 
 void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR, char *QRGtext) {
 
@@ -1987,9 +2153,90 @@ void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR, char *QRGte
 }
 
 /*
- * Detailausgabe Kanal1/2, wird für die Kalibrierung verwendet
- */
+   Detailausgabe Kanal1/2, wird für die Kalibrierung verwendet
+*/
 
+void screen1(byte kanal, float Ulin, float Uatt, float Uk) {
+  int lbg_draw_val_limited;
+  float PmW_out = 0;
+  float PmW = 0;
+  char outstr[30];
+  int i;
+  byte mb = 4;
+  float Um = 0;
+  PmW = pow(10, Ulin / 10.0);
+  mb = MBselect(PmW);
+  resetCursor();
+  outstr[0] = '\0';
+  EMPTY(outstr);
+  itoa(kanal, outstr, 10);
+  strcat(outstr, ">I:");
+  LCDout(outstr, 0, 0, 4);
+
+  PmW_out = PmW / MBwahl[mb].Divisor;
+
+  EMPTY(outstr);
+  // wir zeigen Ulin an, --> Ulin
+  dtostrf(Ulin, 4, 1, outstr);
+  strcat(outstr, "dBm ");
+  LCDout(outstr, 4, 0, 8);
+  EMPTY(outstr);
+  dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
+  strcat(outstr, MBwahl[mb].Unit);
+  LCDout(outstr, 13, 0, 8);
+
+
+  LCDout("ATT:",0,1,4);
+  PmW = pow(10, Uatt / 10.0);
+  mb = MBselect(PmW);
+  resetCursor();
+  EMPTY(outstr);
+  PmW_out = PmW / MBwahl[mb].Divisor;
+  EMPTY(outstr);
+  // wir zeigen Utt Nach Daempfungsglied extern
+  dtostrf(Uatt, 4, 1, outstr);
+  strcat(outstr, "dBm ");
+  LCDout(outstr, 4, 1, 8);
+  EMPTY(outstr);
+  dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
+  strcat(outstr, MBwahl[mb].Unit);
+  LCDout(outstr, 13, 1, 8);
+
+
+  LCDout("KOP:",0,2,4);
+  PmW = pow(10, Uk / 10.0);
+  mb = MBselect(PmW);
+  resetCursor();
+  EMPTY(outstr);
+  PmW_out = PmW / MBwahl[mb].Divisor;
+  EMPTY(outstr);
+  // wir zeigen Uk Nach Daempfungsglied+Koppler extern
+  dtostrf(Uk, 4, 1, outstr);
+  strcat(outstr, "dBm ");
+  LCDout(outstr, 4, 2, 8);
+  EMPTY(outstr);
+  dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
+  strcat(outstr, MBwahl[mb].Unit);
+  LCDout(outstr, 13, 2, 8);
+
+
+   //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
+
+  // der bezug des Graphen muss wahelbar sein
+ 
+  lbg_draw_val_limited = int(1000 * PmW / (MBwahl[mb].range));
+  if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
+  lbgPWR.drawValue(lbg_draw_val_limited, 1000);
+
+  EMPTY(outstr);
+  strcpy(outstr, "[");
+  strcat(outstr, MBwahl[mb].Text);
+  strcat(outstr, "]");
+
+  LCDout(outstr, 13, 3, 7);
+}
+
+/*
 void screen1(byte kanal, float Ulin, float U, float rawU, float scalFactor, char *QRGtext) {
   int lbg_draw_val_limited;
   float PmW_out = 0;
@@ -2056,10 +2303,11 @@ void screen1(byte kanal, float Ulin, float U, float rawU, float scalFactor, char
 
   LCDout(outstr, 13, 3, 7);
 }
+*/
 
 /*
- * DUAL Screen, ohne Koppler
- */
+   DUAL Screen, ohne Koppler
+*/
 
 void screen2( float U1, float U2, float Att1, float Att2, char *QRGtext1, char *QRGtext2) {
   float PmW1_out = 0;
@@ -2118,8 +2366,8 @@ void screen2( float U1, float U2, float Att1, float Att2, char *QRGtext1, char *
 }
 
 /*
- * DUAL Screen mit Koppler
- */
+   DUAL Screen mit Koppler
+*/
 
 //screen3(U1lin + AttKanal1, U2lin + AttKanal2, EEprom.idxKoppler[0], EEpromidxKoppler[1], QRGarray[QRGidx1].Text, QRGarray[QRGidx2].Text);
 void screen3( float U1, float U2, float dbK1, float dbK2, char *QRGtext1, char *QRGtext2) {
@@ -2182,8 +2430,8 @@ void screen3( float U1, float U2, float dbK1, float dbK2, char *QRGtext1, char *
 }
 
 /*
- * Ausgabe des Hauptmenüs aus SWR heraus
- */
+   Ausgabe des Hauptmenüs aus SWR heraus
+*/
 
 void showMenu() {
 
@@ -2202,8 +2450,8 @@ void showMenu() {
 }
 
 /*
- * Cursorsteuerung für DUAL Konfigurationsseite
- */
+   Cursorsteuerung für DUAL Konfigurationsseite
+*/
 
 void configureDUAL() {
   // Konfiguration der Dual Anzeige
@@ -2236,8 +2484,8 @@ void configureDUAL() {
 }
 
 /*
- * Cursprsteurung für DUAL Koppler Konfiguration
- */
+   Cursprsteurung für DUAL Koppler Konfiguration
+*/
 
 void configureDUALKoppler() {
   // Konfiguration der Dual Anzeige
@@ -2254,11 +2502,11 @@ void configureDUALKoppler() {
 }
 
 /*
- * Hauptroutine für die Ausgabe auf LCD
- * Von hier aus werden die screen[0..]() Funktionen angesprungen
- * Steuerung erfolgt über check_encoder()
- * Konfigurationen direkt im screen ohne neues Bildschirm werden auch von hier aus angesprungen (die anderen Konfigurationen siehe check_encoder())
- */
+   Hauptroutine für die Ausgabe auf LCD
+   Von hier aus werden die screen[0..]() Funktionen angesprungen
+   Steuerung erfolgt über check_encoder()
+   Konfigurationen direkt im screen ohne neues Bildschirm werden auch von hier aus angesprungen (die anderen Konfigurationen siehe check_encoder())
+*/
 
 void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
 {
@@ -2282,14 +2530,15 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
 
   // Lienarisierung aufrufen.
   // Länge der LinM Struct kann nicht in der Funktion bestimmt werden (3.Argument)
-  U1lin = linearize(smoothU1, linM0, sizeof(linM0) / sizeof(struct LinStruct));
-  U2lin = linearize(smoothU2, linM0, sizeof(linM0) / sizeof(struct LinStruct));
+  // Beruecksichtigung der internen Daempfung
+  U1lin = linearize(smoothU1, linM0, sizeof(linM0) / sizeof(struct LinStruct)) + EEprom.intAttKanal[0];
+  U2lin = linearize(smoothU2, linM0, sizeof(linM0) / sizeof(struct LinStruct)) + EEprom.intAttKanal[1];
 
   // wir setzen die Auskoppeldaempfung anhand der gewaehlten Frequenz und der der Stuetzstellen
   Koppler1 = KOPPLERarray[EEprom.idxKoppler[0]].sigDB[frequenzIdx];
   Koppler2 = KOPPLERarray[EEprom.idxKoppler[1]].sigDB[frequenzIdx];
 
-  U1 = U1lin + Koppler1 + AttKanal1; //Auskoppeldaempfung und evtl. Daempfungsglied vor dem 8317
+  U1 = U1lin + Koppler1 + AttKanal1; //Auskoppeldaempfung und evtl. zusätzliches externes Dämpfungsglied
   U2 = U2lin + Koppler2 + AttKanal2;
 
   P1mW = pow(10, U1 / 10.0);
@@ -2318,10 +2567,11 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
       screen0(U1, U2, P1mW, P2mW, VSWR, QRGarray[frequenzIdx].Text);
       break;
     case IN1:
-      screen1(1, U1lin, U1lin + AttKanal1, smoothU1, scalFactor1, QRGarray[QRGidx1].Text);
+      screen1(1, U1lin, U1lin + AttKanal1, U1lin+AttKanal1+Koppler1);
       break;
     case IN2:
-      screen1(2, U2lin, U2lin + AttKanal2, smoothU2, scalFactor2, QRGarray[QRGidx2].Text);
+      screen1(2, U2lin, U2lin + AttKanal2, U2lin+AttKanal2+Koppler2);
+      //screen1(2, U2lin, U2lin + AttKanal2, smoothU2, scalFactor2, QRGarray[QRGidx2].Text);
       break;
     case DUAL:
       screen2(U1lin + AttKanal1, U2lin + AttKanal2, AttKanal1, AttKanal2, QRGarray[QRGidx1].Text, QRGarray[QRGidx2].Text);
@@ -2354,9 +2604,9 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
 }
 
 /*
- * Auswahl eines Messbereichs anhand eines Eingangswertes im mW
- * Verändert keine globalen Variablen
- */
+   Auswahl eines Messbereichs anhand eines Eingangswertes im mW
+   Verändert keine globalen Variablen
+*/
 
 byte MBselect(float PmW) {
   // Messbereichsumschaltung anhand MBStruct
@@ -2377,9 +2627,9 @@ byte MBselect(float PmW) {
 }
 
 /*
- * Auswahl des Messbereiches.
- * Setzt globale Varablen MB[kanal]
- */
+   Auswahl des Messbereiches.
+   Setzt globale Varablen MB[kanal]
+*/
 
 byte MB_Wahl(byte kanal, float PmW) {
   // Messbereichsumschaltung anhand MBStruct
@@ -2423,8 +2673,8 @@ byte MB_Wahl(byte kanal, float PmW) {
 
 
 /*
- * Wird nicht mehr gebarucht, später entfernen
- */
+   Wird nicht mehr gebarucht, später entfernen
+*/
 
 void resetCursor() { //um den Cursor im Edit-Mode nach Anzeige des Status wieder an die richtige Stelle zu setzen!
   // if (item_pos == 1) lcd.setCursor(3, 2);
@@ -2433,8 +2683,8 @@ void resetCursor() { //um den Cursor im Edit-Mode nach Anzeige des Status wieder
 
 }
 /*
- * Ausgabe der Messwerte auf serielle Konsole
- */
+   Ausgabe der Messwerte auf serielle Konsole
+*/
 
 void write_raw_seriell() {
   Serial.print("U1:");
