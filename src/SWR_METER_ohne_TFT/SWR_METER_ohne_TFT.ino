@@ -105,7 +105,7 @@ float scalFactor2 = 1.39 ;
 #define PUSHB_INPUT INPUT_PULLUP
 
 #define PINA_INT  CHANGE
-#define PUSHB_INT FALLING
+#define PUSHB_INT CHANGE // auf Change geaendert wegen fired/realsed Erkennung
 
 #define ATT_KOPPLER1 0
 #define ATT_KOPPLER2 0
@@ -156,6 +156,9 @@ float scalFactor2 = 1.0 ;
 // Anzahl des CFG Werte im DUAL Modus
 #define DUALSIZE 4
 
+// Anzahl des Anzeigemodi Werte im IN1/IN2 Modus
+#define INSIZE 3
+
 
 // Anzahl des CFG Werte im DUALKOPPLER Modus
 #define DUALKOPPLERSIZE 2
@@ -163,6 +166,10 @@ float scalFactor2 = 1.0 ;
 //EEPROM Adresse fuer Koppler
 // muss evtl. angepasst werden, wenn das andere Struct zu groß wird
 #define EEPROM_K_ADDR 100
+
+
+// Wie viele Sekunden werden als LAAANG gedrückt erkannt
+#define LONGFIRED 2
 
 // Status für check_encoder, wo wir gerade stehen
 enum mStates {
@@ -174,10 +181,9 @@ enum mStates {
   DUALKOPPLER,
   DUALCFG,
   DUALKOPPLERCFG,
-  FRQ,
-  CFG1,
-  CFG2,
-  KOPPLER,
+  STATUS,
+  INCFG1,
+  INCFG2,
 };
 
 enum kStates {
@@ -277,7 +283,6 @@ struct KOPPLERstruct KOPPLERarray[KOPPLERSIZE];
 
 mStates menuState = SWR;
 mStates oldState = IN1;
-mStates CFGstate = FRQ;
 
 
 int posi = 0;
@@ -332,10 +337,13 @@ boolean items_changed = false;
 
 //Cursorhandling im DualCFG Modus
 byte dualX, dualY;
-byte dualPos;
-byte dualKopplerPos;
+byte dualPos = 0;
+byte dualKopplerPos = 0;
+byte inPos = 0;
 
 boolean refresh = true; // soll Bildschirm neu aufgebaut werden?
+
+
 
 
 CRC8 crc;
@@ -345,6 +353,8 @@ CRC8 crc;
 byte screenNo = 0; // Auswahl der Darstellung, max. Wert MAXSCREEN
 byte oldScreenNo = 0;
 
+
+void(* resetFunc) (void) = 0;
 
 // Initialisiere LCD Display
 LiquidCrystal lcd(LCD_RS, LCD_EN, LCD_D4, LCD_D5, LCD_D6, LCD_D7); // -- creating LCD instance
@@ -360,12 +370,12 @@ void isrB ()
 {
   if (!digitalRead (PUSHB)) {
     fired = true;
-    released=false;
+    released = false;
   }
   else {
     longFired = 0;
     oldLongFired = 0;
-    released=true;
+    released = true;
   }  // end of isr
 }
 
@@ -383,10 +393,10 @@ void isr ()
 }  // end of isr
 
 /*
- * Long Press Auswertung.
- * longFired enthaelt die Zeit in s. die die Taste gedrueckt wurde
- * (geht nicht in IRQ wegen millis() )
- */
+   Long Press Auswertung.
+   longFired enthaelt die Zeit in s. die die Taste gedrueckt wurde
+   (geht nicht in IRQ wegen millis() )
+*/
 void checkButton() {
   if (fired) {
     if (!oldLongFired)
@@ -398,6 +408,31 @@ void checkButton() {
     longFired = 0;
     oldLongFired = 0;
   }
+}
+
+/*
+   Ruecksetzen beider EEprom Bereiche
+*/
+
+
+void resetToDefault() {
+  byte i;
+  EEprom.calibrated[0] = false;
+  EEprom.calibrated[1] = false;
+  EEprom.intAttKanal[0] = 0.0;
+  EEprom.intAttKanal[1] = 0.0;
+  EEprom.attKanal[0] = 0.0;
+  EEprom.attKanal[1] = 0.0;
+  EEprom.idxKoppler[0] = KOPPLERSIZE + 1; // daran erkennen wir, dass keiner zugewiesen wurde
+  EEprom.idxKoppler[1] = KOPPLERSIZE + 1; // daran erkennen wir, dass keiner zugewiesen wurde
+  writeEEPROM();
+
+
+  for (i = 0; i < KOPPLERSIZE; i++) {
+    KOPPLERarray[i].configured = false;
+  }
+  writeEEPROMKoppler(EEPROM_K_ADDR);
+
 }
 
 /*
@@ -472,14 +507,18 @@ void check_encoder() {
         menuState = DUAL;
         screenNo = 0;
       }
-      if (fired && (longFired>2)) { //3 sec druecken
-        
+      if (fired &&  !released && (longFired >= LONGFIRED)) { //3 sec druecken siehe #define
+
         fired = false;
         stopTasks();
         calibration(1, &scalFactor1, PIN_A1, AttKanal1);
         startTasks();
         writeEEPROM();
         refresh = true;
+      }
+      else if (fired && released) { // nir mal kruz gedrueckt, Auswahl des Ausgabewertes
+        fired = false;
+        menuState = INCFG1;
       }
       break;
     case   IN2:   // Eingang2 Anzeige
@@ -493,7 +532,7 @@ void check_encoder() {
         menuState = IN1;
         screenNo = 1;
       }
-      if (fired && (longFired>2)) { //3s druecken
+      if (fired &&  !released && (longFired > LONGFIRED)) { //3s druecken
         fired = false;
         stopTasks();
         calibration(2, &scalFactor2, PIN_A2, AttKanal2);
@@ -501,12 +540,36 @@ void check_encoder() {
         writeEEPROM();
         refresh = true;
       }
+      else if (fired && released) { // nir mal kruz gedrueckt, Auswahl des Ausgabewertes
+        fired = false;
+        menuState = INCFG2;
+      }
+      break;
+    case INCFG1:
+      if (turned && up)
+        inPos < (INSIZE-1) ? inPos++ : (inPos = 0);
+      else if (turned && !up)
+        inPos > 0 ? inPos-- : (inPos = INSIZE - 1);
+      if (fired && released) {
+        menuState = IN1;
+        fired = false;
+      }
+      break;
+    case INCFG2:
+      if (turned && up)
+        inPos < (INSIZE-1) ? inPos++ : (inPos = 0);
+      else if (turned && !up)
+        inPos > 0 ? inPos-- : (inPos = INSIZE - 1);
+      if (fired && released) {
+        menuState = IN2;
+        fired = false;
+      }
       break;
     case DUALCFG:
       if (turned && up)
-        dualPos < DUALSIZE ? dualPos++ : (dualPos = 0);
+        dualPos < (DUALSIZE-1) ? dualPos++ : (dualPos = 0);
       else if (turned && !up)
-        dualPos > 0 ? dualPos-- : (dualPos = DUALSIZE);
+        dualPos > 0 ? dualPos-- : (dualPos = (DUALSIZE-1));
       turned = false;
       if (fired) {
         stopTasks();
@@ -538,9 +601,9 @@ void check_encoder() {
       break;
     case DUALKOPPLERCFG:
       if (turned && up)
-        dualKopplerPos < DUALKOPPLERSIZE ? dualKopplerPos++ : (dualKopplerPos = 0);
+        dualKopplerPos < (DUALKOPPLERSIZE-1) ? dualKopplerPos++ : (dualKopplerPos = 0);
       else if (turned && !up)
-        dualKopplerPos > 0 ? dualKopplerPos-- : (dualKopplerPos = DUALKOPPLERSIZE);
+        dualKopplerPos > 0 ? dualKopplerPos-- : (dualKopplerPos = DUALKOPPLERSIZE-1);
       turned = false;
       if (fired) {
         stopTasks();
@@ -573,6 +636,20 @@ void check_encoder() {
         }
         startTasks();
       }
+    case STATUS: // Anzeige des Status durch langes druecken
+      // drehen , arus zum Menu
+      if (turned)
+        menuState = MENU;
+      turned = false;
+      if (fired) {
+        lcd.clear();
+        LCDout("Alle Werte werden", 0, 0, 17);
+        LCDout("zurueckgesetzt!", 0, 1, 15);
+        LCDout("Danach Neustart", 0, 2, 15);
+        delay(2000);
+        resetToDefault();
+        resetFunc();
+      }
       break;
     case MENU:    // wir sind im Menu
       //
@@ -583,7 +660,8 @@ void check_encoder() {
       turned = false;
       //Serial.print("Conf-Menu menuPos:");
       //Serial.println(menuPos);
-      if (fired) {
+      // Taste muss losgelassen werden. Dient der Auswertung von longFired
+      if (fired && released) {
         stopTasks();
         fired = false;
         switch (menuPos) {
@@ -626,6 +704,10 @@ void check_encoder() {
         startTasks();
         //break;
 
+      }
+      else if (fired && !released && (longFired > LONGFIRED)) { // Taste wurde lange gedrueckt
+        menuState = STATUS;
+        fired = false;
       }
       break;
   }
@@ -766,6 +848,11 @@ void setup() {
     EEprom.calibrated[1] = false;
     EEprom.intAttKanal[0] = 0.0;
     EEprom.intAttKanal[1] = 0.0;
+    EEprom.attKanal[0] = 0.0;
+    EEprom.attKanal[1] = 0.0;
+    EEprom.idxKoppler[0] = KOPPLERSIZE + 1; // daran erkennen wir, dass keiner zugewiesen wurde
+    EEprom.idxKoppler[1] = KOPPLERSIZE + 1; // daran erkennen wir, dass keiner zugewiesen wurde
+
     writeEEPROM();
     // Nach Schreiben und wieder einlesen des EEPROM sollte die Checksumme stimmen, wenn nicht, haben wir ein Problem
     if (!readEEPROM()) {
@@ -796,7 +883,7 @@ void setup() {
     lcd.print("Lese EEPROM Koppler");
   }
 
-  delay(1000);
+  delay(500);
   lcd.clear();
   // Sind die Kanaele kalibiert?
 
@@ -1500,15 +1587,18 @@ void configureInput(byte kanal) {
   LCDout("Koppel No:", 0, 2, 10);
   EMPTY(outstr);
   idx = EEprom.idxKoppler[kanal - 1];
-  itoa(idx, outstr, 10);
-  //dtostrf(EEprom.attKoppler[kanal - 1], 4, 1, outstr);
-  LCDout(outstr, 10, 2, 5);
-  //LCDout("dB", 18, 2, 3);
+  if (idx > KOPPLERSIZE) { // wurde beim initilaisieren gesetzt, also nix definiert
+    LCDout("-", 10, 2, 1);
+  }
+  else {
+    itoa(idx, outstr, 10);
+    LCDout(outstr, 10, 2, 1);
+    EMPTY(outstr);
+    dtostrf(KOPPLERarray[idx].attenuation, 4, 1, outstr);
+    strcat(outstr, "dB ");
+    LCDout(outstr, 13, 2, 8 );
+  }
   LCDout("<EXIT>", 13, 3, 6);
-  EMPTY(outstr);
-  dtostrf(KOPPLERarray[idx].attenuation, 4, 1, outstr);
-  strcat(outstr, "dB ");
-  LCDout(outstr, 13, 2, 8 );
   EMPTY(outstr);
   qrgIdx = KOPPLERarray[idx].minQRGidx;
   strcat(outstr, QRGarray[qrgIdx].Text);
@@ -1518,7 +1608,7 @@ void configureInput(byte kanal) {
   LCDout(outstr, 0, 3, 19);
   oldPos = 1;
   LCDout("<", 12, pos, 1);
-  count = countKoppler(); //wir zaehlen die Koppler
+
   while (1) {
     if (turned) {
       if  (up)
@@ -1539,6 +1629,9 @@ void configureInput(byte kanal) {
         EEprom.attKanal[kanal - 1] = editFloat(EEprom.attKanal[kanal - 1], 13, 1, 4, 1, 0.1);
       }
       else if (pos == 2 && count) { // Auswahl des Kopplers, nur wenn Koppler definiert sind
+        if (idx > KOPPLERSIZE) {
+          idx = 0;
+        }
         EEprom.idxKoppler[kanal - 1] = chooseKoppler(idx, 10, 2, 0, 3);
         //EEprom.attKoppler[kanal - 1] = editFloat(EEprom.attKoppler[kanal - 1], 13, 2, 4, 1, 0.1);
       }
@@ -2148,7 +2241,6 @@ void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR, char *QRGte
 
 
   //edit = true;
-  resetCursor();
 
 }
 
@@ -2156,7 +2248,7 @@ void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR, char *QRGte
    Detailausgabe Kanal1/2, wird für die Kalibrierung verwendet
 */
 
-void screen1(byte kanal, float Ulin, float Uatt, float Uk) {
+void screen1(byte kanal, char *text, float Ulin, float Att, float dbK,  char *QRGtext) {
   int lbg_draw_val_limited;
   float PmW_out = 0;
   float PmW = 0;
@@ -2166,7 +2258,68 @@ void screen1(byte kanal, float Ulin, float Uatt, float Uk) {
   float Um = 0;
   PmW = pow(10, Ulin / 10.0);
   mb = MBselect(PmW);
-  resetCursor();
+
+  outstr[0] = '\0';
+  EMPTY(outstr);
+  itoa(kanal, outstr, 10);
+  strcat(outstr, ">A:");
+  LCDout(outstr, 0, 0, 4);
+  dtostrf(Att, 4, 1, outstr);
+  strcat(outstr, "dB");
+  LCDout(outstr, 4, 0, 8);
+
+  LCDout("K:", 12, 0, 2);
+  EMPTY(outstr);
+  dtostrf(dbK, 4, 1, outstr);
+  strcat(outstr, "dB");
+  LCDout(outstr, 14, 0, 8);
+
+  PmW_out = PmW / MBwahl[mb].Divisor;
+
+  EMPTY(outstr);
+  LCDout(text, 0, 1, 4);
+  // wir zeigen Ulin an, --> Ulin
+  dtostrf(Ulin, 4, 1, outstr);
+  strcat(outstr, "dBm ");
+  LCDout(outstr, 4, 1, 8);
+  EMPTY(outstr);
+  dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
+  strcat(outstr, MBwahl[mb].Unit);
+  LCDout(outstr, 13, 1, 8);
+
+  LCDout("Band:", 0, 2, 5);
+  LCDout(QRGtext, 5, 2, 5);
+
+
+  //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
+
+  // der bezug des Graphen muss wahelbar sein
+
+  lbg_draw_val_limited = int(1000 * PmW / (MBwahl[mb].range));
+  if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
+  lbgPWR.drawValue(lbg_draw_val_limited, 1000);
+
+  EMPTY(outstr);
+  strcpy(outstr, "[");
+  strcat(outstr, MBwahl[mb].Text);
+  strcat(outstr, "]");
+
+  LCDout(outstr, 13, 3, 7);
+}
+
+
+/*
+  void screen1(byte kanal, float Ulin, float Uatt, float Uk) {
+  int lbg_draw_val_limited;
+  float PmW_out = 0;
+  float PmW = 0;
+  char outstr[30];
+  int i;
+  byte mb = 4;
+  float Um = 0;
+  PmW = pow(10, Ulin / 10.0);
+  mb = MBselect(PmW);
+
   outstr[0] = '\0';
   EMPTY(outstr);
   itoa(kanal, outstr, 10);
@@ -2186,10 +2339,10 @@ void screen1(byte kanal, float Ulin, float Uatt, float Uk) {
   LCDout(outstr, 13, 0, 8);
 
 
-  LCDout("ATT:",0,1,4);
+  LCDout("ATT:", 0, 1, 4);
   PmW = pow(10, Uatt / 10.0);
   mb = MBselect(PmW);
-  resetCursor();
+
   EMPTY(outstr);
   PmW_out = PmW / MBwahl[mb].Divisor;
   EMPTY(outstr);
@@ -2203,11 +2356,11 @@ void screen1(byte kanal, float Ulin, float Uatt, float Uk) {
   LCDout(outstr, 13, 1, 8);
 
 
-  LCDout("KOP:",0,2,4);
+  LCDout("KOP:", 0, 2, 4);
   PmW = pow(10, Uk / 10.0);
   mb = MBselect(PmW);
-  resetCursor();
-  EMPTY(outstr);
+
+
   PmW_out = PmW / MBwahl[mb].Divisor;
   EMPTY(outstr);
   // wir zeigen Uk Nach Daempfungsglied+Koppler extern
@@ -2220,77 +2373,9 @@ void screen1(byte kanal, float Ulin, float Uatt, float Uk) {
   LCDout(outstr, 13, 2, 8);
 
 
-   //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
-
-  // der bezug des Graphen muss wahelbar sein
- 
-  lbg_draw_val_limited = int(1000 * PmW / (MBwahl[mb].range));
-  if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
-  lbgPWR.drawValue(lbg_draw_val_limited, 1000);
-
-  EMPTY(outstr);
-  strcpy(outstr, "[");
-  strcat(outstr, MBwahl[mb].Text);
-  strcat(outstr, "]");
-
-  LCDout(outstr, 13, 3, 7);
-}
-
-/*
-void screen1(byte kanal, float Ulin, float U, float rawU, float scalFactor, char *QRGtext) {
-  int lbg_draw_val_limited;
-  float PmW_out = 0;
-  float PmW = 0;
-  char outstr[30];
-  int i;
-  byte mb = 4;
-  float Um = 0;
-  PmW = pow(10, Ulin / 10.0);
-  mb = MBselect(PmW);
-  resetCursor();
-  outstr[0] = '\0';
-  EMPTY(outstr);
-  itoa(kanal, outstr, 10);
-  strcat(outstr, ">");
-  LCDout(outstr, 0, 0, 2);
-
-  PmW_out = PmW / MBwahl[mb].Divisor;
-
-  EMPTY(outstr);
-  // wir zeigen U an, --> Ulin + Eingangsdaempfung
-  dtostrf(U, 4, 1, outstr);
-  strcat(outstr, "dBm ");
-  LCDout(outstr, 2, 0, 8);
-  EMPTY(outstr);
-  dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
-  strcat(outstr, MBwahl[mb].Unit);
-  LCDout(outstr, 11, 0, 8);
-
-
-  Um = rawU /  scalFactor;
-  EMPTY(outstr);
-  LCDout("Dm:", 0, 1, 10);
-  dtostrf(Um, 5, 1, outstr);
-  //strcat(outstr,"Dr:");
-  LCDout(outstr, 4, 1, 10);
-
-  EMPTY(outstr);
-  LCDout("Dk:", 11, 1, 10);
-  dtostrf(rawU, 5, 1, outstr);
-  //strcat(outstr,"Dk:");
-  LCDout(outstr, 15, 1, 10);
-
-  EMPTY(outstr);
-  strcpy(outstr, "Scal:");
-  LCDout(outstr, 0, 2, 5);
-  EMPTY(outstr);
-  dtostrf(scalFactor, 5, 3, outstr);
-  LCDout(outstr, 6, 2, 5);
   //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
 
-  EMPTY(outstr);
-  strcat(outstr, QRGtext);
-  LCDout(outstr, 14, 2, 6);
+  // der bezug des Graphen muss wahelbar sein
 
   lbg_draw_val_limited = int(1000 * PmW / (MBwahl[mb].range));
   if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
@@ -2302,8 +2387,9 @@ void screen1(byte kanal, float Ulin, float U, float rawU, float scalFactor, char
   strcat(outstr, "]");
 
   LCDout(outstr, 13, 3, 7);
-}
+  }
 */
+
 
 /*
    DUAL Screen, ohne Koppler
@@ -2323,7 +2409,7 @@ void screen2( float U1, float U2, float Att1, float Att2, char *QRGtext1, char *
   PmW2 = pow(10, U2 / 10.0);
   mb1 = MBselect(PmW1);
   mb1 = MBselect(PmW1);
-  resetCursor();
+
   EMPTY(outstr);
 
   PmW1_out = PmW1 / MBwahl[mb1].Divisor;
@@ -2385,7 +2471,7 @@ void screen3( float U1, float U2, float dbK1, float dbK2, char *QRGtext1, char *
   PmW2 = pow(10, U2 / 10.0);
   mb1 = MBselect(PmW1);
   mb1 = MBselect(PmW1);
-  resetCursor();
+
   EMPTY(outstr);
 
   PmW1_out = PmW1 / MBwahl[mb1].Divisor;
@@ -2501,6 +2587,37 @@ void configureDUALKoppler() {
   }
 }
 
+
+void screenStatus() {
+  char outstr[30];
+  int i;
+  EMPTY(outstr);
+  LCDout("CFG Uebersicht:", 0, 0, 15);
+  LCDout("1:Sc:", 0, 1, 5);
+  dtostrf(EEprom.scalFactor[0], 5, 3, outstr);
+  LCDout(outstr, 5, 1, 5);
+  EMPTY(outstr);
+  LCDout("AT:", 11, 1, 3);
+  EMPTY(outstr);
+  dtostrf(EEprom.intAttKanal[0], 4, 1, outstr);
+  LCDout(outstr, 14, 1, 4);
+  LCDout("dB", 18, 1, 2);
+  LCDout("2:Sc:", 0, 2, 5);
+  dtostrf(EEprom.scalFactor[1], 5, 3, outstr);
+  LCDout(outstr, 5, 2, 5);
+  EMPTY(outstr);
+  LCDout("AT:", 11, 2, 3);
+  EMPTY(outstr);
+  dtostrf(EEprom.intAttKanal[1], 4, 1, outstr);
+  LCDout(outstr, 14, 2, 4);
+  LCDout("dB", 18, 2, 2);
+  LCDout("Kop:", 0, 3, 4);
+  EMPTY(outstr);
+  itoa(countKoppler(), outstr, 10);
+  LCDout(outstr, 4, 3, 1);
+  LCDout("<<RESET>>", 7, 3, 10);
+}
+
 /*
    Hauptroutine für die Ausgabe auf LCD
    Von hier aus werden die screen[0..]() Funktionen angesprungen
@@ -2520,13 +2637,14 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   char outstr[21];
   char outstr1[21];
   byte i;
+  byte count;
 
   //String outstr;
   //static float old_U1 = 0.0;
   //String P_unit1, P_unit2;
   //int lbg_draw_val_limited;
 
-  resetCursor();
+
 
   // Lienarisierung aufrufen.
   // Länge der LinM Struct kann nicht in der Funktion bestimmt werden (3.Argument)
@@ -2535,8 +2653,15 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
   U2lin = linearize(smoothU2, linM0, sizeof(linM0) / sizeof(struct LinStruct)) + EEprom.intAttKanal[1];
 
   // wir setzen die Auskoppeldaempfung anhand der gewaehlten Frequenz und der der Stuetzstellen
-  Koppler1 = KOPPLERarray[EEprom.idxKoppler[0]].sigDB[frequenzIdx];
-  Koppler2 = KOPPLERarray[EEprom.idxKoppler[1]].sigDB[frequenzIdx];
+  if (EEprom.idxKoppler[0] > KOPPLERSIZE)
+    Koppler1 = 0.0;
+  else
+    Koppler1 = KOPPLERarray[EEprom.idxKoppler[0]].sigDB[QRGidx1];
+  if (EEprom.idxKoppler[1] > KOPPLERSIZE)
+    Koppler2 = 0.0;
+  else
+    Koppler2 = KOPPLERarray[EEprom.idxKoppler[1]].sigDB[QRGidx2];
+
 
   U1 = U1lin + Koppler1 + AttKanal1; //Auskoppeldaempfung und evtl. zusätzliches externes Dämpfungsglied
   U2 = U2lin + Koppler2 + AttKanal2;
@@ -2567,18 +2692,53 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
       screen0(U1, U2, P1mW, P2mW, VSWR, QRGarray[frequenzIdx].Text);
       break;
     case IN1:
-      screen1(1, U1lin, U1lin + AttKanal1, U1lin+AttKanal1+Koppler1);
+      screen1(1, "IN:", U1lin, AttKanal1, Koppler1, QRGarray[QRGidx1].Text);
+      break;
+    case INCFG1:
+      switch (inPos) { // Auswahl der Anzeige in IN1/IN2 nach druecken des Buttons
+        case 0:
+          screen1(1, "IN>", U1lin, AttKanal1, Koppler1, QRGarray[QRGidx1].Text);
+          break;
+        case 1:
+          screen1(1, "AT>", U1lin + AttKanal1, AttKanal1, Koppler1, QRGarray[QRGidx1].Text);
+          break;
+        case 2:
+          screen1(1, "KO>", U1lin + AttKanal1 + Koppler1, AttKanal1, Koppler1, QRGarray[QRGidx1].Text);
+          break;
+        default:
+          Serial.println("INCFG Screen???");
+
+      }
       break;
     case IN2:
-      screen1(2, U2lin, U2lin + AttKanal2, U2lin+AttKanal2+Koppler2);
-      //screen1(2, U2lin, U2lin + AttKanal2, smoothU2, scalFactor2, QRGarray[QRGidx2].Text);
+      screen1(2, "IN:", U2lin, AttKanal2, Koppler2, QRGarray[QRGidx2].Text);
+      break;
+    case INCFG2:
+      switch (inPos) { // Auswahl der Anzeige in IN1/IN2 nach druecken des Buttons
+        case 0:
+          screen1(2, "IN>", U2lin, AttKanal2, Koppler2, QRGarray[QRGidx2].Text);
+          break;
+        case 1:
+          screen1(2, "AT>", U2lin + AttKanal2, AttKanal2, Koppler2, QRGarray[QRGidx2].Text);
+          break;
+        case 2:
+          screen1(2, "KO>", U2lin + AttKanal2 + Koppler2, AttKanal2, Koppler2, QRGarray[QRGidx2].Text);
+          break;
+      }
       break;
     case DUAL:
       screen2(U1lin + AttKanal1, U2lin + AttKanal2, AttKanal1, AttKanal2, QRGarray[QRGidx1].Text, QRGarray[QRGidx2].Text);
       break;
     case DUALKOPPLER:
-      dbK1 = KOPPLERarray[EEprom.idxKoppler[0]].sigDB[QRGidx1];
-      dbK2 = KOPPLERarray[EEprom.idxKoppler[1]].sigDB[QRGidx2];
+
+      if (EEprom.idxKoppler[0] > KOPPLERSIZE)
+        dbK1 = 0.0;
+      else
+        dbK1 = KOPPLERarray[EEprom.idxKoppler[0]].sigDB[QRGidx1];
+      if (EEprom.idxKoppler[1] > KOPPLERSIZE)
+        dbK2 = 0.0;
+      else
+        dbK2 = KOPPLERarray[EEprom.idxKoppler[1]].sigDB[QRGidx2];
       screen3(U1lin + AttKanal1 + dbK1, U2lin + AttKanal2 + dbK2, dbK1 , dbK2, QRGarray[QRGidx1].Text, QRGarray[QRGidx2].Text);
       break;
     case MENU:
@@ -2591,14 +2751,24 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
       break;
     case DUALKOPPLERCFG:
       configureDUALKoppler();
-      dbK1 = KOPPLERarray[EEprom.idxKoppler[0]].sigDB[QRGidx1];
-      dbK2 = KOPPLERarray[EEprom.idxKoppler[1]].sigDB[QRGidx2];
+      //Serial.println(EEprom.idxKoppler[1]);
+      if (EEprom.idxKoppler[0] > KOPPLERSIZE)
+        dbK1 = 0.0;
+      else
+        dbK1 = KOPPLERarray[EEprom.idxKoppler[0]].sigDB[QRGidx1];
+      if (EEprom.idxKoppler[1] > KOPPLERSIZE)
+        dbK2 = 0.0;
+      else
+        dbK2 = KOPPLERarray[EEprom.idxKoppler[1]].sigDB[QRGidx2];
       screen3(U1lin + AttKanal1 + dbK1, U2lin + AttKanal2 + dbK2, dbK1 , dbK2, QRGarray[QRGidx1].Text, QRGarray[QRGidx2].Text);
       break;
+    case STATUS: //Ausgabe der konfigurierten Werte
+      count = countKoppler();
+      screenStatus(); // die Werte werden dort aus den globalen Einstellungen ermittelt
 
   }
   refresh = false;
-  resetCursor();
+
 
 
 }
@@ -2672,16 +2842,6 @@ byte MB_Wahl(byte kanal, float PmW) {
 }
 
 
-/*
-   Wird nicht mehr gebarucht, später entfernen
-*/
-
-void resetCursor() { //um den Cursor im Edit-Mode nach Anzeige des Status wieder an die richtige Stelle zu setzen!
-  // if (item_pos == 1) lcd.setCursor(3, 2);
-  //  if (item_pos == 2) lcd.setCursor(12, 2);
-  //  if (item_pos == 3) lcd.setCursor(18, 2);
-
-}
 /*
    Ausgabe der Messwerte auf serielle Konsole
 */
