@@ -677,6 +677,9 @@ void check_encoder() {
             writeEEPROM();
             refresh = true;
             menuState = SWR;
+            // wir setzen die temporaren Werte auch auf die gewaehlte Frequenz
+            QRGidx1=frequenzIdx;
+            QRGidx2=frequenzIdx;
             break;
           case 1: // Konfiguration Kanal 1
             configureInput(1);
