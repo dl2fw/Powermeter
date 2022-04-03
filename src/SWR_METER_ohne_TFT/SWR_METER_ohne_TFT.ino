@@ -149,6 +149,9 @@ float scalFactor2 = 1.0 ;
 // Anzahl der zu verwaltenden Kopppler, durch EEPROM Größe beschränkt (Index 0-9 --> 10 )
 #define KOPPLERSIZE 10
 
+// Anzahl der definierten PAS
+#define PASIZE 2
+
 
 // Anzahl der Menueeintrage
 #define MENUSIZE 4
@@ -159,6 +162,8 @@ float scalFactor2 = 1.0 ;
 // Anzahl des Anzeigemodi Werte im IN1/IN2 Modus
 #define INSIZE 3
 
+// Anzahl Positionen im INCFG Konf.
+#define INCFGSIZE 6
 
 // Anzahl des CFG Werte im DUALKOPPLER Modus
 #define DUALKOPPLERSIZE 2
@@ -166,16 +171,39 @@ float scalFactor2 = 1.0 ;
 //EEPROM Adresse fuer Koppler
 // muss evtl. angepasst werden, wenn das andere Struct zu groß wird
 #define EEPROM_K_ADDR 100
+// dito fuer PA
+#define EEPROM_PA_ADDR 1000
 
 
 // Wie viele Sekunden werden als LAAANG gedrückt erkannt
 #define LONGFIRED 2
+
+/*
+  // Werte fuer PA Anzeige, wandert spaeter in die Konfiguration
+  #define PILIN 12.0 // bis zu welchem Pegel in dBm ist die PA linear
+  #define PIMAX 17.0 // Vollaustseuerung der PA bei Input in dBm
+  #define GLIN  30.0 // Verstaerkung linear
+  #define POMAX 43.0 // max. Ausgangsleistung der PA in dBm
+  #define PIMXX 20.0 // absolut max Eingangsleistung (schon in der Sättigung)
+  #define ATTKABEL 4.0 // Daempung Kabel von Koppler zur PA
+*/
+
+// Werte fuer PA Anzeige, wandert spaeter in die Konfiguration
+#define PILIN 2.0 // bis zu welchem Pegel in dBm ist die PA linear
+#define PIMAX 7.0 // Vollaustseuerung der PA bei Input in dBm
+#define GLIN  30.0 // Verstaerkung linear
+#define POMAX 35.0 // max. Ausgangsleistung der PA in dBm
+#define PIMXX 10.0 // absolut max Eingangsleistung (schon in der Sättigung)
+#define ATTKABEL 4.0 // Daempung Kabel von Koppler zur PA
+
 
 // Status für check_encoder, wo wir gerade stehen
 enum mStates {
   SWR,
   IN1,
   IN2,
+  INPA1,
+  INPA2,
   MENU,
   DUAL,
   DUALKOPPLER,
@@ -184,6 +212,8 @@ enum mStates {
   STATUS,
   INCFG1,
   INCFG2,
+  INPACFG1,
+  INPACFG2,
 };
 
 enum kStates {
@@ -275,11 +305,30 @@ struct EEKopplerStruct {
   byte CRC;                             // Pruefsumme
 };
 
+
+struct PAstruct {
+  float piLin;    // bis zu welchem Pegel in dBm ist die PA linear
+  float piMax;   // Vollaustseuerung der PA bei Input in dBm
+  float gLin;    // Verstaerkung linear
+  float poMax;   // max. Ausgangsleistung der PA in dBm
+  float piMxx;   //absolut max Eingangsleistung (schon in der Sättigung)
+  float attKabel;// Daempung Kabel von Koppler zur PA
+};
+
+
+
+struct EEPAstruct {
+  struct PAstruct Parray[PASIZE];    // PA Defintion fuer Kanal 1 2
+  byte CRC;                      // Pruefsumme
+};
+
 struct MBStruct MBwahl[10];
 struct EEStruct EEprom;
 struct EEKopplerStruct EEpromKoppler;
 struct QRGstruct QRGarray[QRGSIZE];
 struct KOPPLERstruct KOPPLERarray[KOPPLERSIZE];
+struct PAstruct PAarray[PASIZE];
+struct EEPAstruct EEpromPA;
 
 mStates menuState = SWR;
 mStates oldState = IN1;
@@ -342,7 +391,6 @@ byte dualKopplerPos = 0;
 byte inPos = 0;
 
 boolean refresh = true; // soll Bildschirm neu aufgebaut werden?
-
 
 
 
@@ -460,7 +508,7 @@ void check_encoder() {
       }
       if (turned && !up) {
         turned = false;
-        menuState = IN2;
+        menuState = INPA2;
         screenNo = 2;
       }
       break;
@@ -524,7 +572,7 @@ void check_encoder() {
     case   IN2:   // Eingang2 Anzeige
       if (turned && up) {
         turned = false;
-        menuState = SWR;
+        menuState = INPA1;
         screenNo = 0;
       }
       if (turned && !up) {
@@ -545,9 +593,54 @@ void check_encoder() {
         menuState = INCFG2;
       }
       break;
+    case INPA1:  // Eingang 1 mit PA Anzeige
+      if (turned && up) {
+        turned = false;
+        menuState = INPA2;
+        screenNo = 0;
+      }
+      if (turned && !up) {
+        turned = false;
+        menuState = IN2;
+        screenNo = 1;
+      }
+      if (fired && released) { // nir mal kruz gedrueckt, Auswahl des Ausgabewertes
+        fired = false;
+        stopTasks();
+        configurePA(1);
+        writeEEPROMPA(EEPROM_PA_ADDR);
+        startTasks();
+        //menuState = INPACFG1;
+      }
+      break;
+    case INPA2:// Eingang 1 mit PA Anzeige
+      if (turned && up) {
+        turned = false;
+        menuState = SWR;
+        screenNo = 0;
+      }
+      if (turned && !up) {
+        turned = false;
+        menuState = INPA1;
+        screenNo = 1;
+      };
+      if (turned && !up) {
+        turned = false;
+        menuState = IN2;
+        screenNo = 1;
+      }
+      if (fired && released) { // nir mal kruz gedrueckt, Auswahl des Ausgabewertes
+        fired = false;
+        stopTasks();
+        configurePA(2);
+        writeEEPROMPA(EEPROM_PA_ADDR);
+        startTasks();
+        //menuState = INPACFG2;
+      }
+      break;
     case INCFG1:
       if (turned && up)
-        inPos < (INSIZE-1) ? inPos++ : (inPos = 0);
+        inPos < (INSIZE - 1) ? inPos++ : (inPos = 0);
       else if (turned && !up)
         inPos > 0 ? inPos-- : (inPos = INSIZE - 1);
       if (fired && released) {
@@ -557,7 +650,7 @@ void check_encoder() {
       break;
     case INCFG2:
       if (turned && up)
-        inPos < (INSIZE-1) ? inPos++ : (inPos = 0);
+        inPos < (INSIZE - 1) ? inPos++ : (inPos = 0);
       else if (turned && !up)
         inPos > 0 ? inPos-- : (inPos = INSIZE - 1);
       if (fired && released) {
@@ -567,9 +660,9 @@ void check_encoder() {
       break;
     case DUALCFG:
       if (turned && up)
-        dualPos < (DUALSIZE-1) ? dualPos++ : (dualPos = 0);
+        dualPos < (DUALSIZE - 1) ? dualPos++ : (dualPos = 0);
       else if (turned && !up)
-        dualPos > 0 ? dualPos-- : (dualPos = (DUALSIZE-1));
+        dualPos > 0 ? dualPos-- : (dualPos = (DUALSIZE - 1));
       turned = false;
       if (fired) {
         stopTasks();
@@ -601,9 +694,9 @@ void check_encoder() {
       break;
     case DUALKOPPLERCFG:
       if (turned && up)
-        dualKopplerPos < (DUALKOPPLERSIZE-1) ? dualKopplerPos++ : (dualKopplerPos = 0);
+        dualKopplerPos < (DUALKOPPLERSIZE - 1) ? dualKopplerPos++ : (dualKopplerPos = 0);
       else if (turned && !up)
-        dualKopplerPos > 0 ? dualKopplerPos-- : (dualKopplerPos = DUALKOPPLERSIZE-1);
+        dualKopplerPos > 0 ? dualKopplerPos-- : (dualKopplerPos = DUALKOPPLERSIZE - 1);
       turned = false;
       if (fired) {
         stopTasks();
@@ -678,8 +771,8 @@ void check_encoder() {
             refresh = true;
             menuState = SWR;
             // wir setzen die temporaren Werte auch auf die gewaehlte Frequenz
-            QRGidx1=frequenzIdx;
-            QRGidx2=frequenzIdx;
+            QRGidx1 = frequenzIdx;
+            QRGidx2 = frequenzIdx;
             break;
           case 1: // Konfiguration Kanal 1
             configureInput(1);
@@ -728,6 +821,7 @@ void check_encoder() {
 
 void setup() {
   boolean waitFired = false; // warte auf Tastendruck
+  byte i;
   Serial.begin(115200);
   // -- initializing the LCD
   Serial.println("Start PowerMeter");
@@ -835,6 +929,19 @@ void setup() {
   frequenz = QRGarray[QRG].frequency;
   frequenzIdx = QRG;
 
+
+  // Initialiiserung des PA Arrays
+  for (i = 0; i < PASIZE; i++) {
+    PAarray[i].piLin = 0.0;
+    PAarray[i].piMax = 0.0;
+    PAarray[i].gLin = 0.0;
+    PAarray[i].poMax = 0.0;
+    PAarray[i].piMxx = 0.0;
+    PAarray[i].attKabel = 0.0;
+  }
+
+
+
   // Hier das eigentliche "Multitasking"
 
   // Ausgelagert in eine Subroutine, um die Tasks bei Menüs ein-und auszuschalten
@@ -878,6 +985,22 @@ void setup() {
     if (!readEEPROMKoppler(EEPROM_K_ADDR)) {
       lcd.setCursor(0, 3);
       lcd.print("EEPROM Koppler ERROR");
+      while (1);
+    }
+  }
+  else {
+    lcd.setCursor(0, 3);
+    lcd.print("Lese EEPROM Koppler");
+  }
+  // und jetzt noch die PAs
+  if (!readEEPROMPA(EEPROM_PA_ADDR)) {
+    lcd.setCursor(0, 3);
+    lcd.print("EEPROM PAinit..");
+    writeEEPROMPA(EEPROM_PA_ADDR);
+    // Konsistenzprüfung nach initalem anlegen
+    if (!readEEPROMPA(EEPROM_PA_ADDR)) {
+      lcd.setCursor(0, 3);
+      lcd.print("EEPROM PA ERROR");
       while (1);
     }
   }
@@ -1010,6 +1133,40 @@ boolean readEEPROMKoppler(int eeAddress) {
 
 }
 
+/*
+ * Lesen der PA definitionen
+ */
+
+boolean readEEPROMPA(int eeAddress) {
+  byte checkCRC = 0;
+
+  Serial.print("Lese EEPROM  PA...");
+  Serial.print(" Groesse:");
+  Serial.println(sizeof(EEpromPA));
+  EEPROM.get(eeAddress, EEpromPA);
+  
+
+  crc.reset();
+  checkCRC = EEpromPA.CRC;
+  EEpromPA.CRC = 0; // sonst stimmt die CRC Summe nicht, sie darf nicht  mit eingerechnet werden
+  crc.add((uint8_t *)&EEpromPA, sizeof(EEpromPA));
+  //Serial.print("  CRC calc:");
+  //Serial.println(crc.getCRC());
+  if ( crc.getCRC()  != checkCRC) {
+    Serial.println("EEPROM PA Checksumme falsch");
+    return false;
+  }
+  else {
+    //Serial.println("EEPROM PA Checksumme OK");
+    // setzen der globalen Variablen
+    memcpy(PAarray, &EEpromPA.Parray, sizeof(PAstruct)*PASIZE);
+    //printKopplerCFG();
+    return true;
+  }
+
+}
+
+
 void writeEEPROM() {
   int eeAddress = 0;
 
@@ -1066,6 +1223,34 @@ void writeEEPROMKoppler(int eeAddress ) {
   //EEPROM.put(eeAddress, KOPPLERarray);
 
 }
+
+
+void writeEEPROMPA(int eeAddress ) {
+  byte i, j;
+
+  Serial.print("Schreibe EEPROM PA...");
+  Serial.print(" Groesse:");
+  Serial.print(sizeof(PAstruct)*PASIZE);
+
+  //wir kopieren das PAArray in EEpromKoppler, weil wir die Checksumme in der Struct brauchen
+  memcpy(&EEpromPA.Parray, &PAarray, sizeof(PAstruct)*PASIZE);
+  EEpromPA.CRC = 0;
+
+  crc.reset();
+  crc.add((uint8_t *)&EEpromPA, sizeof(EEpromPA));
+  EEpromPA.CRC = crc.getCRC();
+
+  Serial.print(" CRC PA:");
+  Serial.println(EEpromPA.CRC);
+  Serial.print(" Groesse pro PA:");
+  Serial.println(sizeof(PAstruct));
+
+
+  EEPROM.put(eeAddress, EEpromPA);
+  //EEPROM.put(eeAddress, KOPPLERarray);
+
+}
+
 
 /*
    Ausgabe der Kopplerkofniguration auf der seriellen Konsole
@@ -1651,9 +1836,239 @@ void configureInput(byte kanal) {
 }
 
 /*
+   Konfiguration der PA des Eingangskanals
+   Kanal wird mit 1 oder 2 angegeben
+
+*/
+void configurePA(byte kanal) {
+  char outstr[21];
+  byte i;
+  byte pos = 1;
+  byte oldPos = 0;
+  const byte mSize = 6;
+  byte idx;
+  byte qrgIdx;
+  byte count;
+
+  idx = kanal - 1;
+
+  lcd.clear();
+  EMPTY(outstr);
+  strcpy(outstr, "Konf.PA");
+  LCDout(outstr, 0, 0, 7);
+  EMPTY(outstr);
+  itoa(kanal, outstr, 10);
+  LCDout(outstr, 7, 0, 1);
+  EMPTY(outstr);
+  LCDout("G:", 10, 0, 2);
+  EMPTY(outstr);
+  dtostrf(PAarray[idx].gLin, 2, 0, outstr);
+  LCDout(outstr, 12, 0, 2);
+  LCDout("dB", 14, 0, 3);
+
+  LCDout("PIl:", 0, 1, 4);
+  EMPTY(outstr);
+  dtostrf(PAarray[idx].piLin, 2, 0, outstr);
+  LCDout(outstr, 4, 1, 2);
+  LCDout("dBm", 6, 1, 3);
+  LCDout("PIm:", 10, 1, 4);
+  EMPTY(outstr);
+  dtostrf(PAarray[idx].piMax, 2, 0, outstr);
+  LCDout(outstr, 14, 1, 2);
+  LCDout("dBm", 16, 1, 3);
+
+  LCDout("POm:", 0, 2, 4);
+  EMPTY(outstr);
+  dtostrf(PAarray[idx].poMax, 2, 0, outstr);
+  LCDout(outstr, 4, 2, 2);
+  LCDout("dBm", 6, 2, 3);
+  LCDout("PIx:", 10, 2, 4);
+  EMPTY(outstr);
+  dtostrf(PAarray[idx].piMxx, 2, 0, outstr);
+  LCDout(outstr, 14, 2, 2);
+  LCDout("dBm", 16, 2, 3);
+
+  LCDout("Att:", 0, 3, 5);
+  EMPTY(outstr);
+  dtostrf(PAarray[idx].attKabel, 4, 1, outstr);
+  LCDout(outstr, 5, 3, 4);
+  LCDout("dB", 9, 3, 3);
+  LCDout("EXIT", 15, 3, 5);
+  pos = 6; // auf EXIT positionieren
+  while (1) {
+    refreshPAPosition(pos);
+    if (turned) {
+      if  (up)
+        pos < mSize ? pos++ : (pos = 0);
+      else if (!up)
+        pos > 0 ? pos-- : (pos = mSize);
+      turned = false;
+    }
+    if (fired) {
+      fired = false;
+      switch (pos) {
+        case 0: // Gain
+        PAarray[idx].gLin=editFloat(PAarray[idx].gLin, 12, 0, 2, 0, 1);
+        pos=1;
+          break;
+        case 1: // piLin
+        PAarray[idx].piLin=editFloat(PAarray[idx].piLin, 4, 1, 2, 0, 1);
+        pos=2;
+          break;
+        case 2: // piMax
+          PAarray[idx].piMax=editFloat(PAarray[idx].piMax, 14, 1, 2, 0, 1);
+          pos=3;
+          break;
+        case 3: // poMax
+        PAarray[idx].poMax=editFloat(PAarray[idx].poMax, 4, 2, 2, 0, 1);
+          pos=4;
+          break;
+        case 4: // piMxx
+        PAarray[idx].piMxx=editFloat(PAarray[idx].piMxx, 14, 2, 2, 0, 1);
+          pos=5;
+          break;
+          case 5: // attKabel
+        PAarray[idx].attKabel=editFloat(PAarray[idx].attKabel, 5, 3, 4, 1, 0.5);
+          pos=6;
+          break; 
+        case 6: //EXIT;
+        lcd.clear();
+          return;
+          break;
+      }
+
+    }
+    delay(20);
+  }
+
+ 
+
+}
+
+
+void refreshPAPosition(byte edtPos) {
+  switch (edtPos) {
+    case 0:
+      LCDout("<", 18, 0, 1);
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 9, 2, 1);
+      LCDout(" ", 19, 2, 1);
+      LCDout(" ", 12, 3, 1);
+      LCDout(" ", 14, 3, 1);
+      break;
+    case 1:
+      LCDout(" ", 18, 0, 1);
+      LCDout("<", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 9, 2, 1);
+      LCDout(" ", 19, 2, 1);
+      LCDout(" ", 12, 3, 1);
+      LCDout(" ", 14, 3, 1);
+      break;
+    case 2:
+      LCDout(" ", 18, 0, 1);
+      LCDout(" ", 9, 1, 1);
+      LCDout("<", 19, 1, 1);
+      LCDout(" ", 9, 2, 1);
+      LCDout(" ", 19, 2, 1);
+      LCDout(" ", 12, 3, 1);
+      LCDout(" ", 14, 3, 1);
+      break;
+    case 3:
+      LCDout(" ", 18, 0, 1);
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout("<", 9, 2, 1);
+      LCDout(" ", 19, 2, 1);
+      LCDout(" ", 12, 3, 1);
+      LCDout(" ", 14, 3, 1);
+      break;
+    case 4:
+      LCDout(" ", 18, 0, 1);
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 9, 2, 1);
+      LCDout("<", 19, 2, 1);
+      LCDout(" ", 12, 3, 1);
+      LCDout(" ", 14, 3, 1);
+      break;
+    case 5:
+      LCDout(" ", 18, 0, 1);
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 9, 2, 1);
+      LCDout(" ", 19, 2, 1);
+      LCDout("<", 12, 3, 1);
+      LCDout(" ", 14, 3, 1);
+      break;
+    case 6:
+      LCDout(" ", 18, 0, 1);
+      LCDout(" ", 9, 1, 1);
+      LCDout(" ", 19, 1, 1);
+      LCDout(" ", 9, 2, 1);
+      LCDout(" ", 19, 2, 1);
+      LCDout(" ", 12, 3, 1);
+      LCDout(">", 14, 3, 1);
+  }
+}
+/*
+  LCDout("<EXIT>", 13, 3, 6);
+  EMPTY(outstr);
+  qrgIdx = KOPPLERarray[idx].minQRGidx;
+  strcat(outstr, QRGarray[qrgIdx].Text);
+  strcat(outstr, "/");
+  qrgIdx = KOPPLERarray[idx].maxQRGidx;
+  strcat(outstr, QRGarray[qrgIdx].Text);
+  LCDout(outstr, 0, 3, 19);
+  oldPos = 1;
+  LCDout("<", 12, pos, 1);
+
+  while (1) {
+    if (turned) {
+      if  (up)
+        pos < mSize ? pos++ : (pos = 1);
+      else if (!up)
+        pos > 1 ? pos-- : (pos = mSize);
+      turned = false;
+      LCDout("<", 12, pos, 1);
+      LCDout(" ", 12, oldPos, 1);
+      oldPos = pos;
+      lcd.setCursor(12, pos);
+    }
+    if (fired) {
+      fired = false;
+      //Serial.print("Pos");
+      //Serial.println(pos);
+      if (pos == 1) { // wir aendern die Eingangsdaempfung
+        EEprom.attKanal[kanal - 1] = editFloat(EEprom.attKanal[kanal - 1], 13, 1, 4, 1, 0.1);
+      }
+      else if (pos == 2 && count) { // Auswahl des Kopplers, nur wenn Koppler definiert sind
+        if (idx > KOPPLERSIZE) {
+          idx = 0;
+        }
+        EEprom.idxKoppler[kanal - 1] = chooseKoppler(idx, 10, 2, 0, 3);
+        //EEprom.attKoppler[kanal - 1] = editFloat(EEprom.attKoppler[kanal - 1], 13, 2, 4, 1, 0.1);
+      }
+      else if (pos == 3) {
+        lcd.noCursor();
+        lcd.noBlink();
+        return;
+
+      }
+    }
+    delay(20);
+  }
+
+*/
+
+
+/*
    Refresh des Bildschirm bei der Kopplerdefinition
    Wurde der Übersichtlichkeit ausgelagert
 */
+
+
 
 void refreshKoppler(byte koppler) {
   // Ausgabe der Kopplerdaten
@@ -2230,6 +2645,7 @@ void screen0(float U1, float U2, float P1mW, float P2mW, float VSWR, char *QRGte
   lbg_draw_val_limited = int(1000 * P1mW / (MBwahl[MB[0]].range));
   if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
   lbgPWR.drawValue(lbg_draw_val_limited, 1000);
+  LCDout("       ", 13, 3, 7);
   outstr[0] = '\0';
   EMPTY(outstr);
   strcpy(outstr, "[");
@@ -2301,7 +2717,7 @@ void screen1(byte kanal, char *text, float Ulin, float Att, float dbK,  char *QR
   lbg_draw_val_limited = int(1000 * PmW / (MBwahl[mb].range));
   if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
   lbgPWR.drawValue(lbg_draw_val_limited, 1000);
-
+  LCDout("       ", 13, 3, 7);
   EMPTY(outstr);
   strcpy(outstr, "[");
   strcat(outstr, MBwahl[mb].Text);
@@ -2309,89 +2725,6 @@ void screen1(byte kanal, char *text, float Ulin, float Att, float dbK,  char *QR
 
   LCDout(outstr, 13, 3, 7);
 }
-
-
-/*
-  void screen1(byte kanal, float Ulin, float Uatt, float Uk) {
-  int lbg_draw_val_limited;
-  float PmW_out = 0;
-  float PmW = 0;
-  char outstr[30];
-  int i;
-  byte mb = 4;
-  float Um = 0;
-  PmW = pow(10, Ulin / 10.0);
-  mb = MBselect(PmW);
-
-  outstr[0] = '\0';
-  EMPTY(outstr);
-  itoa(kanal, outstr, 10);
-  strcat(outstr, ">I:");
-  LCDout(outstr, 0, 0, 4);
-
-  PmW_out = PmW / MBwahl[mb].Divisor;
-
-  EMPTY(outstr);
-  // wir zeigen Ulin an, --> Ulin
-  dtostrf(Ulin, 4, 1, outstr);
-  strcat(outstr, "dBm ");
-  LCDout(outstr, 4, 0, 8);
-  EMPTY(outstr);
-  dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
-  strcat(outstr, MBwahl[mb].Unit);
-  LCDout(outstr, 13, 0, 8);
-
-
-  LCDout("ATT:", 0, 1, 4);
-  PmW = pow(10, Uatt / 10.0);
-  mb = MBselect(PmW);
-
-  EMPTY(outstr);
-  PmW_out = PmW / MBwahl[mb].Divisor;
-  EMPTY(outstr);
-  // wir zeigen Utt Nach Daempfungsglied extern
-  dtostrf(Uatt, 4, 1, outstr);
-  strcat(outstr, "dBm ");
-  LCDout(outstr, 4, 1, 8);
-  EMPTY(outstr);
-  dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
-  strcat(outstr, MBwahl[mb].Unit);
-  LCDout(outstr, 13, 1, 8);
-
-
-  LCDout("KOP:", 0, 2, 4);
-  PmW = pow(10, Uk / 10.0);
-  mb = MBselect(PmW);
-
-
-  PmW_out = PmW / MBwahl[mb].Divisor;
-  EMPTY(outstr);
-  // wir zeigen Uk Nach Daempfungsglied+Koppler extern
-  dtostrf(Uk, 4, 1, outstr);
-  strcat(outstr, "dBm ");
-  LCDout(outstr, 4, 2, 8);
-  EMPTY(outstr);
-  dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
-  strcat(outstr, MBwahl[mb].Unit);
-  LCDout(outstr, 13, 2, 8);
-
-
-  //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
-
-  // der bezug des Graphen muss wahelbar sein
-
-  lbg_draw_val_limited = int(1000 * PmW / (MBwahl[mb].range));
-  if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
-  lbgPWR.drawValue(lbg_draw_val_limited, 1000);
-
-  EMPTY(outstr);
-  strcpy(outstr, "[");
-  strcat(outstr, MBwahl[mb].Text);
-  strcat(outstr, "]");
-
-  LCDout(outstr, 13, 3, 7);
-  }
-*/
 
 
 /*
@@ -2516,6 +2849,116 @@ void screen3( float U1, float U2, float dbK1, float dbK2, char *QRGtext1, char *
   LCDout(outstr, 12, 3, 4);
   LCDout("dB", 16, 3, 4);
 
+}
+
+/*
+   Ausgabe PA und Kabeldaempfung
+*/
+
+void screen4(byte kanal, char *text, float Ulin,  char *QRGtext, float PiLin, float PiMax, float Glin, float PoMax, float PiMxx, float AttKabel) {
+  int lbg_draw_val_limited;
+  float PmW = 0.0;
+  float PmW_out = 0.0;
+  float Gdiff = 0.0;
+  char outstr[30];
+  char state[4];
+  int i;
+  byte mb = 4;
+  float Um = 0;
+
+  // wir berechnen den Status des Signals
+  EMPTY(state);
+  if ((Ulin - AttKabel) < PiLin)
+    strcpy(state, "LIN");
+  else if ((Ulin - AttKabel) < PiMax)
+    strcpy(state, "SAT");
+  else if ((Ulin - AttKabel) < PiMxx)
+    strcpy(state, "MAX");
+  else
+    strcpy(state, "!!!");
+
+  //Ulin hat den Wert hinter dem Koppler, also gemessene Ausgangsleistung
+  PmW = pow(10, Ulin / 10.0);
+  mb = MBselect(PmW);
+
+  outstr[0] = '\0';
+  EMPTY(outstr);
+  itoa(kanal, outstr, 10);
+  strcat(outstr, "Po:");
+  LCDout(outstr, 0, 0, 4);
+  dtostrf(Ulin, 4, 1, outstr);
+  strcat(outstr, "dBm");
+  LCDout(outstr, 4, 0, 8);
+
+  LCDout(state, 14, 0, 3);
+  EMPTY(outstr);
+  //mW Ausgang Koppler
+  PmW_out = PmW / MBwahl[mb].Divisor;
+
+
+  // Nun Kommt der Eingangspegel der PA
+  Ulin -= AttKabel;
+
+  EMPTY(outstr);
+  LCDout("PAi:", 0, 1, 4);
+  dtostrf(Ulin, 4, 1, outstr);
+  strcat(outstr, "dBm ");
+  LCDout(outstr, 4, 1, 8);
+  EMPTY(outstr);
+  PmW = pow(10, Ulin / 10.0);
+  mb = MBselect(PmW);
+  PmW_out = PmW / MBwahl[mb].Divisor;
+  dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
+  strcat(outstr, MBwahl[mb].Unit);
+  LCDout(outstr, 13, 1, 8);
+
+  // nun Ausgangspegel der PA
+  // hier muessen wir rechnen
+  // Kabeldaempfung ist bei Ulin schon abgezogen
+  if (Ulin < PiLin) { // linearer Bereich
+    Ulin += Glin;
+  }
+  else if (Ulin < PiMax) { // Saettigungsbereich
+    Gdiff = (Glin - PoMax + PiMax) / (PiMax - PiLin);
+    Ulin +=  Glin - (Gdiff * (Ulin - PiLin));
+  }
+  else { // mehr geht nicht, als PoMax setzen
+    Ulin = PoMax;
+  }
+
+
+
+  EMPTY(outstr);
+  LCDout("PAo:", 0, 2, 4);
+  dtostrf(Ulin, 4, 1, outstr);
+  strcat(outstr, "dBm ");
+  LCDout(outstr, 4, 2, 8);
+  EMPTY(outstr);
+  PmW = pow(10, Ulin / 10.0);
+  mb = MBselect(PmW);
+  PmW_out = PmW / MBwahl[mb].Divisor;
+  dtostrf(PmW_out, 5, MBwahl[mb].Nachkomma, outstr);
+  strcat(outstr, MBwahl[mb].Unit);
+  LCDout(" ", 19, 2, 1);
+  LCDout(outstr, 13, 2, 8);
+
+  //Den zu zeichnenden Bargraph mit dem jeweiligen Messbereich skalieren und auf 999 begrenzen
+
+  // der bezug des Graphen muss wahelbar sein
+
+  lbg_draw_val_limited = int(1000 * PmW / (MBwahl[mb].range));
+  if (lbg_draw_val_limited > 999) lbg_draw_val_limited = 999;
+  lbgPWR.drawValue(lbg_draw_val_limited, 1000);
+
+
+  LCDout("       ", 13, 3, 7);
+
+  EMPTY(outstr);
+  strcpy(outstr, "[");
+  strcat(outstr, MBwahl[mb].Text);
+  strcat(outstr, "]");
+
+  LCDout(outstr, 13, 3, 7);
 }
 
 /*
@@ -2728,6 +3171,12 @@ void write_lcd() //auffrischen des LCD  - wird alle 100ms angestossen
           screen1(2, "KO>", U2lin + AttKanal2 + Koppler2, AttKanal2, Koppler2, QRGarray[QRGidx2].Text);
           break;
       }
+      break;
+    case INPA1:
+      screen4(1, "PA", U1lin + AttKanal1 + Koppler1, QRGarray[QRGidx1].Text, PAarray[0].piLin, PAarray[0].piMax, PAarray[0].gLin, PAarray[0].poMax, PAarray[0].piMxx, PAarray[0].attKabel);
+      break;
+    case INPA2:
+      screen4(2, "PA", U2lin + AttKanal2 + Koppler2, QRGarray[QRGidx2].Text, PAarray[1].piLin, PAarray[1].piMax, PAarray[1].gLin, PAarray[1].poMax, PAarray[1].piMxx, PAarray[1].attKabel);
       break;
     case DUAL:
       screen2(U1lin + AttKanal1, U2lin + AttKanal2, AttKanal1, AttKanal2, QRGarray[QRGidx1].Text, QRGarray[QRGidx2].Text);
